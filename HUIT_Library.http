@@ -1,0 +1,6 @@
+@HUIT_Library_HostAddress = http://localhost:5144
+
+GET {{HUIT_Library_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
