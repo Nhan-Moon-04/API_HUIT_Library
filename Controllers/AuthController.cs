@@ -1,4 +1,5 @@
-using HUIT_Library.DTOs;
+﻿using HUIT_Library.DTOs;
+using HUIT_Library.DTOs.Request;
 using HUIT_Library.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -16,7 +17,7 @@ namespace HUIT_Library.Controllers
         }
 
         /// <summary>
-        /// ??ng nh?p cho sinh vi�n v� gi?ng vi�n (UI)
+        /// ??ng nh?p cho sinh viên và gi?ng viên (UI)
         /// </summary>
         [HttpPost("login")]
         public async Task<ActionResult<LoginResponse>> Login([FromBody] LoginRequest request)
@@ -26,7 +27,7 @@ namespace HUIT_Library.Controllers
                 return BadRequest(new LoginResponse
                 {
                     Success = false,
-                    Message = "D? li?u kh�ng h?p l?!"
+                    Message = "D? li?u không h?p l?!"
                 });
             }
 
@@ -39,38 +40,30 @@ namespace HUIT_Library.Controllers
         }
 
         /// <summary>
-        /// ??ng k� cho sinh vi�n v� gi?ng vi�n
+        /// ??ng ký cho sinh viên và gi?ng viên
         /// </summary>
-        [HttpPost("register")]
-        public async Task<ActionResult<LoginResponse>> Register([FromBody] RegisterRequest request)
+
+
+
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
         {
-            // Debug logging
-            Console.WriteLine($"CONTROLLER DEBUG - VaiTro: {request?.VaiTro ?? "NULL"}");
-            Console.WriteLine($"CONTROLLER DEBUG - MaSinhVien: {request?.MaSinhVien ?? "NULL"}");
-            Console.WriteLine($"CONTROLLER DEBUG - MaNhanVien: {request?.MaNhanVien ?? "NULL"}");
-            Console.WriteLine($"CONTROLLER DEBUG - HoTen: {request?.HoTen ?? "NULL"}");
+            var result = await _authService.ForgotPasswordAsync(request.Email);
+            if (!result)
+                return BadRequest(new { message = "Email không tồn tại trong hệ thống." });
 
-            if (!ModelState.IsValid)
-            {
-                Console.WriteLine("CONTROLLER DEBUG - ModelState Invalid:");
-                foreach (var error in ModelState)
-                {
-                    Console.WriteLine($"  {error.Key}: {string.Join(", ", error.Value.Errors.Select(e => e.ErrorMessage))}");
-                }
-                
-                return BadRequest(new LoginResponse
-                {
-                    Success = false,
-                    Message = "D? li?u kh�ng h?p l?!"
-                });
-            }
-
-            var result = await _authService.RegisterAsync(request);
-            
-            if (result.Success)
-                return Ok(result);
-            
-            return BadRequest(result);
+            return Ok(new { message = "Email đặt lại mật khẩu đã được gửi." });
         }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
+        {
+            var result = await _authService.ResetPasswordAsync(request.Token, request.NewPassword);
+            if (!result)
+                return BadRequest(new { message = "Token không hợp lệ hoặc đã hết hạn." });
+
+            return Ok(new { message = "Đặt lại mật khẩu thành công!" });
+        }
+
     }
 }

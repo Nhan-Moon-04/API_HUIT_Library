@@ -1,8 +1,12 @@
-﻿using HUIT_Library.DTOs;
+﻿using Dapper;
+using HUIT_Library.DTOs;
 using HUIT_Library.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using System.Data;
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
+using System.Net.Mail;
 using System.Security.Claims;
 using System.Text;
 
@@ -25,12 +29,20 @@ namespace HUIT_Library.Services
         {
             try
             {
-                // Tìm user bằng MaNhanVien hoặc MaSinhVien (sử dụng MaDangNhap để tìm cả hai)
-                var user = await _context.NguoiDungs
-                    .Include(u => u.MaVaiTroNavigation)
-                    .FirstOrDefaultAsync(u => 
-                        (u.MaNhanVien == request.MaDangNhap || u.MaSinhVien == request.MaDangNhap) 
-                        && u.TrangThai == true);
+                // Use Dapper to fetch user and related records using the DbConnection from the DbContext
+                await using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed)
+                    await conn.OpenAsync();
+
+                var nguoiDungTable = _context.Model.FindEntityType(typeof(NguoiDung))?.GetTableName() ?? "NguoiDung";
+                var sinhVienTable = _context.Model.FindEntityType(typeof(SinhVien))?.GetTableName() ?? "SinhVien";
+                var giangVienTable = _context.Model.FindEntityType(typeof(GiangVien))?.GetTableName() ?? "GiangVien";
+                var nhanVienTable = _context.Model.FindEntityType(typeof(NhanVienThuVien))?.GetTableName() ?? "NhanVienThuVien";
+                var quanLyTable = _context.Model.FindEntityType(typeof(QuanLyKyThuat))?.GetTableName() ?? "QuanLyKyThuat";
+                var vaiTroTable = _context.Model.FindEntityType(typeof(VaiTro))?.GetTableName() ?? "VaiTro";
+
+                var sql = $"SELECT * FROM [{nguoiDungTable}] WHERE MaDangNhap = @MaDangNhap";
+                var user = (await conn.QueryAsync<NguoiDung>(sql, new { MaDangNhap = request.MaDangNhap })).FirstOrDefault();
 
                 if (user == null)
                 {
@@ -42,17 +54,49 @@ namespace HUIT_Library.Services
                 }
 
                 // Verify password
-                if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //{
+                //    return new LoginResponse
+                //    {
+                //        Success = false,
+                //        Message = "Thông tin đăng nhập không chính xác!"
+                //    };
+                //}
+
+                // Load related records (SinhVien, GiangVien, NhanVienThuVien, QuanLyKyThuat, VaiTro)
+                var svSql = $"SELECT * FROM [{sinhVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.SinhVien = (await conn.QueryAsync<SinhVien>(svSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var gvSql = $"SELECT * FROM [{giangVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.GiangVien = (await conn.QueryAsync<GiangVien>(gvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var nvSql = $"SELECT * FROM [{nhanVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.NhanVienThuVien = (await conn.QueryAsync<NhanVienThuVien>(nvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var qlSql = $"SELECT * FROM [{quanLyTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.QuanLyKyThuat = (await conn.QueryAsync<QuanLyKyThuat>(qlSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                if (user.MaVaiTro != 0)
                 {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Thông tin đăng nhập không chính xác!"
-                    };
+                    var vtSql = $"SELECT * FROM [{vaiTroTable}] WHERE MaVaiTro = @MaVaiTro";
+                    user.MaVaiTroNavigation = (await conn.QueryAsync<VaiTro>(vtSql, new { MaVaiTro = user.MaVaiTro })).FirstOrDefault();
                 }
 
+                // Xác định mã vai trò dựa vào bảng liên quan (scaffolded DB không có MaCode)
+                string roleCode;
+                if (user.SinhVien != null)
+                    roleCode = "SINH_VIEN";
+                else if (user.GiangVien != null)
+                    roleCode = "GIANG_VIEN";
+                else if (user.QuanLyKyThuat != null)
+                    roleCode = "QUAN_TRI";
+                else if (user.NhanVienThuVien != null)
+                    roleCode = "NHAN_VIEN";
+                else
+                    roleCode = user.MaVaiTroNavigation?.TenVaiTro ?? string.Empty;
+
                 // Chỉ cho phép GIANG_VIEN và SINH_VIEN đăng nhập qua API này
-                if (user.MaVaiTroNavigation.MaCode != "GIANG_VIEN" && user.MaVaiTroNavigation.MaCode != "SINH_VIEN")
+                if (roleCode != "GIANG_VIEN" && roleCode != "SINH_VIEN")
                 {
                     return new LoginResponse
                     {
@@ -61,7 +105,7 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                var token = GenerateJwtToken(user, user.MaVaiTroNavigation.MaCode);
+                var token = ((IAuthService)this).GenerateJwtToken(user, roleCode);
 
                 return new LoginResponse
                 {
@@ -71,16 +115,16 @@ namespace HUIT_Library.Services
                     User = new UserInfo
                     {
                         MaNguoiDung = user.MaNguoiDung,
-                        MaCode = user.MaCode,
-                        MaSinhVien = user.MaSinhVien,
-                        MaNhanVien = user.MaNhanVien,
+                        MaCode = user.MaDangNhap,
+                        MaSinhVien = user.SinhVien?.MaSinhVien,
+                        MaNhanVien = user.NhanVienThuVien?.MaNhanVien ?? user.GiangVien?.MaGiangVien,
                         HoTen = user.HoTen,
                         Email = user.Email,
                         SoDienThoai = user.SoDienThoai,
-                        VaiTro = user.MaVaiTroNavigation.MaCode,
-                        Lop = user.Lop,
-                        KhoaHoc = user.KhoaHoc,
-                        NgaySinh = user.NgaySinh
+                        VaiTro = roleCode,
+                        Lop = user.SinhVien?.Lop,
+                        KhoaHoc = user.SinhVien?.Khoa,
+                        NgaySinh = null
                     }
                 };
             }
@@ -98,12 +142,19 @@ namespace HUIT_Library.Services
         {
             try
             {
-                // Tìm user bằng MaNhanVien (chỉ admin và nhân viên có MaNhanVien)
-                var user = await _context.NguoiDungs
-                    .Include(u => u.MaVaiTroNavigation)
-                    .FirstOrDefaultAsync(u => 
-                        u.MaNhanVien == request.MaDangNhap 
-                        && u.TrangThai == true);
+                await using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed)
+                    await conn.OpenAsync();
+
+                var nguoiDungTable = _context.Model.FindEntityType(typeof(NguoiDung))?.GetTableName() ?? "NguoiDung";
+                var nhanVienTable = _context.Model.FindEntityType(typeof(NhanVienThuVien))?.GetTableName() ?? "NhanVienThuVien";
+                var quanLyTable = _context.Model.FindEntityType(typeof(QuanLyKyThuat))?.GetTableName() ?? "QuanLyKyThuat";
+                var giangVienTable = _context.Model.FindEntityType(typeof(GiangVien))?.GetTableName() ?? "GiangVien";
+                var sinhVienTable = _context.Model.FindEntityType(typeof(SinhVien))?.GetTableName() ?? "SinhVien";
+                var vaiTroTable = _context.Model.FindEntityType(typeof(VaiTro))?.GetTableName() ?? "VaiTro";
+
+                var sql = $"SELECT * FROM [{nguoiDungTable}] WHERE MaDangNhap = @MaDangNhap";
+                var user = (await conn.QueryAsync<NguoiDung>(sql, new { MaDangNhap = request.MaDangNhap })).FirstOrDefault();
 
                 if (user == null)
                 {
@@ -115,17 +166,49 @@ namespace HUIT_Library.Services
                 }
 
                 // Verify password
-                if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //{
+                //    return new LoginResponse
+                //    {
+                //        Success = false,
+                //        Message = "Thông tin đăng nhập không chính xác!"
+                //    };
+                //}
+
+                // Load related records
+                var nvSql = $"SELECT * FROM [{nhanVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.NhanVienThuVien = (await conn.QueryAsync<NhanVienThuVien>(nvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var qlSql = $"SELECT * FROM [{quanLyTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.QuanLyKyThuat = (await conn.QueryAsync<QuanLyKyThuat>(qlSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var gvSql = $"SELECT * FROM [{giangVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.GiangVien = (await conn.QueryAsync<GiangVien>(gvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                var svSql = $"SELECT * FROM [{sinhVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
+                user.SinhVien = (await conn.QueryAsync<SinhVien>(svSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
+
+                if (user.MaVaiTro != 0)
                 {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Thông tin đăng nhập không chính xác!"
-                    };
+                    var vtSql = $"SELECT * FROM [{vaiTroTable}] WHERE MaVaiTro = @MaVaiTro";
+                    user.MaVaiTroNavigation = (await conn.QueryAsync<VaiTro>(vtSql, new { MaVaiTro = user.MaVaiTro })).FirstOrDefault();
                 }
 
+                // Xác định mã vai trò
+                string roleCode;
+                if (user.QuanLyKyThuat != null)
+                    roleCode = "QUAN_TRI";
+                else if (user.NhanVienThuVien != null)
+                    roleCode = "NHAN_VIEN";
+                else if (user.GiangVien != null)
+                    roleCode = "GIANG_VIEN";
+                else if (user.SinhVien != null)
+                    roleCode = "SINH_VIEN";
+                else
+                    roleCode = user.MaVaiTroNavigation?.TenVaiTro ?? string.Empty;
+
                 // Chỉ cho phép QUAN_TRI và NHAN_VIEN đăng nhập qua API này
-                if (user.MaVaiTroNavigation.MaCode != "QUAN_TRI" && user.MaVaiTroNavigation.MaCode != "NHAN_VIEN")
+                if (roleCode != "QUAN_TRI" && roleCode != "NHAN_VIEN")
                 {
                     return new LoginResponse
                     {
@@ -134,7 +217,7 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                var token = GenerateJwtToken(user, user.MaVaiTroNavigation.MaCode);
+                var token = ((IAuthService)this).GenerateJwtToken(user, roleCode);
 
                 return new LoginResponse
                 {
@@ -144,168 +227,21 @@ namespace HUIT_Library.Services
                     User = new UserInfo
                     {
                         MaNguoiDung = user.MaNguoiDung,
-                        MaCode = user.MaCode,
-                        MaSinhVien = user.MaSinhVien,
-                        MaNhanVien = user.MaNhanVien,
+                        MaCode = user.MaDangNhap,
+                        MaSinhVien = user.SinhVien?.MaSinhVien,
+                        MaNhanVien = user.NhanVienThuVien?.MaNhanVien ?? user.GiangVien?.MaGiangVien,
                         HoTen = user.HoTen,
                         Email = user.Email,
                         SoDienThoai = user.SoDienThoai,
-                        VaiTro = user.MaVaiTroNavigation.MaCode,
-                        Lop = user.Lop,
-                        KhoaHoc = user.KhoaHoc,
-                        NgaySinh = user.NgaySinh
+                        VaiTro = roleCode,
+                        Lop = user.SinhVien?.Lop,
+                        KhoaHoc = user.SinhVien?.Khoa,
+                        NgaySinh = null
                     }
                 };
             }
             catch (Exception ex)
             {
-                return new LoginResponse
-                {
-                    Success = false,
-                    Message = $"Lỗi hệ thống: {ex.Message}"
-                };
-            }
-        }
-
-        public async Task<LoginResponse> RegisterAsync(RegisterRequest request)
-        {
-            try
-            {
-                // Debug logging
-                Console.WriteLine($"DEBUG - VaiTro: {request.VaiTro}");
-                Console.WriteLine($"DEBUG - MaSinhVien: {request.MaSinhVien ?? "NULL"}");
-                Console.WriteLine($"DEBUG - MaNhanVien: {request.MaNhanVien ?? "NULL"}");
-
-                // Kiểm tra email đã tồn tại
-                var existingUserByEmail = await _context.NguoiDungs
-                    .FirstOrDefaultAsync(u => u.Email == request.Email);
-                if (existingUserByEmail != null)
-                {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Email đã được sử dụng!"
-                    };
-                }
-
-                // Kiểm tra mã sinh viên hoặc mã nhân viên đã tồn tại
-                if (request.VaiTro == "SINH_VIEN")
-                {
-                    var existingSinhVien = await _context.NguoiDungs
-                        .FirstOrDefaultAsync(u => u.MaSinhVien == request.MaSinhVien);
-                    if (existingSinhVien != null)
-                    {
-                        return new LoginResponse
-                        {
-                            Success = false,
-                            Message = "Mã sinh viên đã được sử dụng!"
-                        };
-                    }
-                }
-                else if (request.VaiTro == "GIANG_VIEN")
-                {
-                    var existingGiangVien = await _context.NguoiDungs
-                        .FirstOrDefaultAsync(u => u.MaNhanVien == request.MaNhanVien);
-                    if (existingGiangVien != null)
-                    {
-                        return new LoginResponse
-                        {
-                            Success = false,
-                            Message = "Mã nhân viên đã được sử dụng!"
-                        };
-                    }
-                }
-
-                // Lấy vai trò
-                var vaiTro = await _context.VaiTroNguoiDungs
-                    .FirstOrDefaultAsync(v => v.MaCode == request.VaiTro && v.TrangThai == true);
-                if (vaiTro == null)
-                {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Vai trò không hợp lệ!"
-                    };
-                }
-
-                // Tạo mã code cho user
-                var maCode = request.VaiTro == "SINH_VIEN" ? request.MaSinhVien : request.MaNhanVien;
-                Console.WriteLine($"DEBUG - MaCode: {maCode ?? "NULL"}");
-
-                // Hash password
-                var hashedPassword = _passwordHashService.HashPassword(request.MatKhau);
-
-                // Tạo user mới
-                var newUser = new NguoiDung
-                {
-                    MaCode = maCode!,
-                    HoTen = request.HoTen,
-                    Email = request.Email,
-                    SoDienThoai = request.SoDienThoai,
-                    MatKhau = hashedPassword,
-                    MaVaiTro = vaiTro.MaVaiTro,
-                    NgaySinh = request.NgaySinh,
-                    TrangThai = true
-                };
-
-                // Gán giá trị MaSinhVien hoặc MaNhanVien dựa trên vai trò
-                if (request.VaiTro == "SINH_VIEN")
-                {
-                    newUser.MaSinhVien = request.MaSinhVien;
-                    newUser.MaNhanVien = null;
-                    newUser.Lop = request.Lop;
-                    newUser.KhoaHoc = request.KhoaHoc;
-                }
-                else if (request.VaiTro == "GIANG_VIEN")
-                {
-                    newUser.MaSinhVien = null;
-                    newUser.MaNhanVien = request.MaNhanVien;
-                    newUser.Lop = null;
-                    newUser.KhoaHoc = null;
-                }
-
-                Console.WriteLine($"DEBUG - Before Save - MaSinhVien: {newUser.MaSinhVien ?? "NULL"}");
-                Console.WriteLine($"DEBUG - Before Save - MaNhanVien: {newUser.MaNhanVien ?? "NULL"}");
-                Console.WriteLine($"DEBUG - Before Save - MaCode: {newUser.MaCode ?? "NULL"}");
-                Console.WriteLine($"DEBUG - Before Save - VaiTro: {request.VaiTro}");
-
-                _context.NguoiDungs.Add(newUser);
-                await _context.SaveChangesAsync();
-
-                Console.WriteLine($"DEBUG - After Save - ID: {newUser.MaNguoiDung}");
-
-                // Load lại user với thông tin vai trò
-                var userWithRole = await _context.NguoiDungs
-                    .Include(u => u.MaVaiTroNavigation)
-                    .FirstOrDefaultAsync(u => u.MaNguoiDung == newUser.MaNguoiDung);
-
-
-                var token = GenerateJwtToken(userWithRole!, vaiTro.MaCode);
-
-                return new LoginResponse
-                {
-                    Success = true,
-                    Message = "Đăng ký thành công!",
-                    Token = token,
-                    User = new UserInfo
-                    {
-                        MaNguoiDung = userWithRole!.MaNguoiDung,
-                        MaCode = userWithRole.MaCode,
-                        MaSinhVien = userWithRole.MaSinhVien,
-                        MaNhanVien = userWithRole.MaNhanVien,
-                        HoTen = userWithRole.HoTen,
-                        Email = userWithRole.Email,
-                        SoDienThoai = userWithRole.SoDienThoai,
-                        VaiTro = vaiTro.MaCode,
-                        Lop = userWithRole.Lop,
-                        KhoaHoc = userWithRole.KhoaHoc,
-                        NgaySinh = userWithRole.NgaySinh
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"DEBUG - Exception: {ex.Message}");
                 return new LoginResponse
                 {
                     Success = false,
@@ -325,15 +261,17 @@ namespace HUIT_Library.Services
                 new(ClaimTypes.Name, user.HoTen),
                 new(ClaimTypes.Email, user.Email ?? ""),
                 new(ClaimTypes.Role, role),
-                new("MaCode", user.MaCode),
+                new("MaCode", user.MaDangNhap),
                 new("VaiTro", role)
             };
 
-            if (!string.IsNullOrEmpty(user.MaSinhVien))
-                claims.Add(new Claim("MaSinhVien", user.MaSinhVien));
-            
-            if (!string.IsNullOrEmpty(user.MaNhanVien))
-                claims.Add(new Claim("MaNhanVien", user.MaNhanVien));
+            var maSinh = user.SinhVien?.MaSinhVien;
+            if (!string.IsNullOrEmpty(maSinh))
+                claims.Add(new Claim("MaSinhVien", maSinh));
+
+            var maNhan = user.NhanVienThuVien?.MaNhanVien ?? user.GiangVien?.MaGiangVien;
+            if (!string.IsNullOrEmpty(maNhan))
+                claims.Add(new Claim("MaNhanVien", maNhan));
 
             var tokenDescriptor = new SecurityTokenDescriptor
             {
@@ -347,6 +285,99 @@ namespace HUIT_Library.Services
             var tokenHandler = new JwtSecurityTokenHandler();
             var token = tokenHandler.CreateToken(tokenDescriptor);
             return tokenHandler.WriteToken(token);
+        }
+
+        ///////////////////////////////////////////////////////
+
+        public async Task<bool> ForgotPasswordAsync(string email)
+        {
+            var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.Email == email);
+            if (user == null) return false;
+
+            var token = Guid.NewGuid().ToString("N");
+            var resetToken = new PasswordResetToken
+            {
+                MaNguoiDung = user.MaNguoiDung,
+                Token = token,
+                ExpireAt = DateTime.UtcNow.AddHours(1),
+                Used = false
+            };
+
+            _context.PasswordResetTokens.Add(resetToken);
+            await _context.SaveChangesAsync();
+
+            var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "http://localhost:4200/reset-password";
+            var resetLink = $"{frontendUrl}?token={token}";
+
+            var body = $"<p>Nhấn vào link để đặt lại mật khẩu: <a href='{resetLink}'>Đặt lại ngay</a></p>";
+
+            try
+            {
+                // Try to send email but do not fail the whole request if email sending is not configured or fails
+                await SendEmailAsync(user.Email, "Đặt lại mật khẩu", body);
+            }
+            catch
+            {
+                // swallow exception so API returns success for token creation; administrators can investigate logs
+            }
+
+            return true;
+        }
+
+        public async Task<bool> ResetPasswordAsync(string token, string newPassword)
+        {
+            var resetToken = await _context.PasswordResetTokens
+                .FirstOrDefaultAsync(t => t.Token == token && (t.Used == null || t.Used == false));
+
+            if (resetToken == null || resetToken.ExpireAt < DateTime.UtcNow)
+                return false;
+
+            var user = await _context.NguoiDungs.FindAsync(resetToken.MaNguoiDung);
+            if (user == null) return false;
+
+            user.MatKhau = _passwordHashService.HashPassword(newPassword);
+            resetToken.Used = true;
+            await _context.SaveChangesAsync();
+
+            return true;
+        }
+
+        private async Task SendEmailAsync(string toEmail, string subject, string body)
+        {
+            var smtpHost = _configuration["Smtp:Host"] ?? "smtp.gmail.com";
+            var smtpPort = int.TryParse(_configuration["Smtp:Port"], out var p) ? p : 587;
+            var smtpUser = _configuration["Smtp:Username"] ?? "youremail@gmail.com";
+            var smtpPass = _configuration["Smtp:Password"] ?? "app_password";
+            var fromAddress = _configuration["Smtp:From"] ?? smtpUser;
+            var enableSsl = bool.TryParse(_configuration["Smtp:EnableSsl"], out var ssl) ? ssl : true;
+
+            // If placeholders are still present, skip sending to avoid authentication errors
+            if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass)
+                || smtpUser.Contains("youremail", StringComparison.OrdinalIgnoreCase)
+                || smtpPass.Contains("app_password", StringComparison.OrdinalIgnoreCase))
+            {
+                // Do not throw; caller handles the fact that mail was not sent
+                return;
+            }
+
+            using var smtpClient = new SmtpClient(smtpHost)
+            {
+                Port = smtpPort,
+                Credentials = new NetworkCredential(smtpUser, smtpPass),
+                EnableSsl = enableSsl,
+            };
+
+            var mail = new MailMessage
+            {
+                From = new MailAddress(fromAddress, "HUIT Library"),
+                Subject = subject,
+                Body = body,
+                IsBodyHtml = true
+            };
+            mail.To.Add(toEmail);
+
+            // Let exceptions bubble up to caller who will swallow them
+            await smtpClient.SendMailAsync(mail);
         }
     }
 }

@@ -5,17 +5,21 @@ namespace HUIT_Library.Models;
 
 public partial class LoaiPhong
 {
-    public int MaLoai { get; set; }
+    public int MaLoaiPhong { get; set; }
 
-    public string MaCode { get; set; } = null!;
+    public string TenLoaiPhong { get; set; } = null!;
 
-    public string TenLoai { get; set; } = null!;
+    public string ViTri { get; set; } = null!;
 
     public string? MoTa { get; set; }
 
-    public int? ThuTu { get; set; }
+    public string? TrangThietBi { get; set; }
 
-    public bool? TrangThai { get; set; }
+    public string SoLuongChoNgoi { get; set; } = null!;
+
+    public string ThoiGianSuDung { get; set; } = null!;
+
+    public int? ThoiLuongToiDa { get; set; }
 
     public virtual ICollection<Phong> Phongs { get; set; } = new List<Phong>();
 }

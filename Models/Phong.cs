@@ -7,23 +7,17 @@ public partial class Phong
 {
     public int MaPhong { get; set; }
 
-    public string MaCode { get; set; } = null!;
-
     public string TenPhong { get; set; } = null!;
 
-    public int MaLoai { get; set; }
+    public int MaLoaiPhong { get; set; }
 
-    public string? ViTri { get; set; }
+    public int? MaTrangThai { get; set; }
 
-    public byte? Tang { get; set; }
+    public virtual ICollection<DangKyPhong> DangKyPhongs { get; set; } = new List<DangKyPhong>();
 
-    public int? SucChua { get; set; }
+    public virtual ICollection<LichTrangThaiPhong> LichTrangThaiPhongs { get; set; } = new List<LichTrangThaiPhong>();
 
-    public string? MoTa { get; set; }
+    public virtual LoaiPhong MaLoaiPhongNavigation { get; set; } = null!;
 
-    public string? TrangThai { get; set; }
-
-    public virtual ICollection<DatPhong> DatPhongs { get; set; } = new List<DatPhong>();
-
-    public virtual LoaiPhong MaLoaiNavigation { get; set; } = null!;
+    public virtual ICollection<PhongTaiNguyen> PhongTaiNguyens { get; set; } = new List<PhongTaiNguyen>();
 }

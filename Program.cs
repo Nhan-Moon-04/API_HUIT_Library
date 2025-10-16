@@ -15,11 +15,12 @@ builder.Services.AddDbContext<HuitThuVienContext>(options =>
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IPasswordHashService, PasswordHashService>();
 
+
 // Add CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", builder =>
-    {
+    {   
         builder.AllowAnyOrigin()
                .AllowAnyMethod()
                .AllowAnyHeader();
