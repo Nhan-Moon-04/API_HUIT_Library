@@ -1,6 +1,7 @@
 ﻿using HUIT_Library.DTOs;
 using HUIT_Library.DTOs.Request;
 using HUIT_Library.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace HUIT_Library.Controllers
@@ -85,5 +86,27 @@ namespace HUIT_Library.Controllers
 
             return Ok(new { email, token });
         }
+
+        // Allow calling change-password either with a valid JWT or by supplying MaCode in the request body (for Swagger/testing)
+        [HttpPost("change-password")]
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+        {
+            // Prefer authenticated claim, otherwise fall back to the request body MaCode
+            var maDangNhap = User.FindFirst("MaCode")?.Value ?? request.MaCode;
+
+            if (string.IsNullOrEmpty(maDangNhap))
+            {
+                // Neither authenticated nor provided MaCode
+                return Unauthorized(new { message = "Authentication required or provide MaCode in request body." });
+            }
+
+            var result = await _authService.ChangePasswordAsync(maDangNhap, request.CurrentPassword, request.NewPassword);
+
+            if (!result)
+                return BadRequest(new { message = "Mật khẩu hiện tại không đúng." });
+
+            return Ok(new { message = "Đổi mật khẩu thành công." });
+        }
+
     }
 }

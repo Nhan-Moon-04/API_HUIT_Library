@@ -13,5 +13,8 @@ namespace HUIT_Library.Services
 
         // Development-only helper to retrieve latest reset token for a user's email
         Task<string?> GetLatestResetTokenByEmailAsync(string email);
+
+        // Change password using current password for verification
+        Task<bool> ChangePasswordAsync(string maDangNhap, string currentPassword, string newPassword);
     }
 }
