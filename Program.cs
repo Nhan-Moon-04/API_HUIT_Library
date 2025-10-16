@@ -43,10 +43,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+
+
 app.UseHttpsRedirection();
 
 app.UseCors("AllowAll");
 
 app.MapControllers();
 
+app.Urls.Add("https://0.0.0.0:7100");
 app.Run();

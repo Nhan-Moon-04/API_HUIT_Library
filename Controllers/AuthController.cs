@@ -71,5 +71,19 @@ namespace HUIT_Library.Controllers
             return Ok(new { message = "Đặt lại mật khẩu thành công!" });
         }
 
+        // Development-only: retrieve latest reset token for an email
+        [HttpGet("dev/latest-reset-token")]
+        public async Task<IActionResult> GetLatestResetToken([FromQuery] string email)
+        {
+            var env = _configuration["ASPNETCORE_ENVIRONMENT"] ?? "Production";
+            if (env != "Development")
+                return NotFound();
+
+            var token = await _authService.GetLatestResetTokenByEmailAsync(email);
+            if (token == null)
+                return NotFound(new { message = "Không tìm thấy user hoặc token." });
+
+            return Ok(new { email, token });
+        }
     }
 }

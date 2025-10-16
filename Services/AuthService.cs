@@ -2,6 +2,7 @@
 using HUIT_Library.DTOs;
 using HUIT_Library.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using System.Data;
 using System.IdentityModel.Tokens.Jwt;
@@ -17,12 +18,14 @@ namespace HUIT_Library.Services
         private readonly HuitThuVienContext _context;
         private readonly IConfiguration _configuration;
         private readonly IPasswordHashService _passwordHashService;
+        private readonly ILogger<AuthService> _logger;
 
-        public AuthService(HuitThuVienContext context, IConfiguration configuration, IPasswordHashService passwordHashService)
+        public AuthService(HuitThuVienContext context, IConfiguration configuration, IPasswordHashService passwordHashService, ILogger<AuthService> logger)
         {
             _context = context;
             _configuration = configuration;
             _passwordHashService = passwordHashService;
+            _logger = logger;
         }
 
         public async Task<LoginResponse> LoginAsync(LoginRequest request)
@@ -289,50 +292,55 @@ namespace HUIT_Library.Services
 
         ///////////////////////////////////////////////////////
 
-        public async Task<ForgotPasswordResponse> ForgotPasswordAsync(string email)
-        {
-            var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null)
-                return new ForgotPasswordResponse { Success = false, Message = "Email không tồn tại trong hệ thống.", EmailSent = false };
-
-            var token = Guid.NewGuid().ToString("N");
-            var resetToken = new PasswordResetToken
+            public async Task<ForgotPasswordResponse> ForgotPasswordAsync(string email)
             {
-                MaNguoiDung = user.MaNguoiDung,
-                Token = token,
-                ExpireAt = DateTime.UtcNow.AddHours(1),
-                Used = false
-            };
+                var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.Email == email);
+                if (user == null)
+                    return new ForgotPasswordResponse { Success = false, Message = "Email không tồn tại trong hệ thống.", EmailSent = false };
 
-            _context.PasswordResetTokens.Add(resetToken);
-            await _context.SaveChangesAsync();
+                var token = Guid.NewGuid().ToString("N");
 
-            var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "http://localhost:4200/reset-password";
-            var resetLink = $"{frontendUrl}?token={token}";
+                // Log token for admin/debug (do NOT expose token to client in production)
+                _logger.LogInformation("Password reset token generated for {Email}: {Token}", user.Email, token);
 
-            var body = $"<p>Nhấn vào link để đặt lại mật khẩu: <a href='{resetLink}'>Đặt lại ngay</a></p>";
+                var resetToken = new PasswordResetToken
+                {
+                    MaNguoiDung = user.MaNguoiDung,
+                    Token = token,
+                    ExpireAt = DateTime.UtcNow.AddHours(1),
+                    Used = false
+                };
 
-            var emailSent = false;
-            try
-            {
-                // Try to send email; SendEmailAsync will throw if EmailSettings missing or on failure
-                await SendEmailAsync(user.Email, "Đặt lại mật khẩu", body);
-                emailSent = true;
+                _context.PasswordResetTokens.Add(resetToken);
+                await _context.SaveChangesAsync();
+
+                var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "https://1dx4jm3x-4200.asse.devtunnels.ms/forgot-password";
+                var resetLink = $"{frontendUrl}?token={token}";
+
+                var body = $"<p>Nhấn vào link để đặt lại mật khẩu: <a href='{resetLink}'>Đặt lại ngay</a></p>";
+
+                var emailSent = false;
+                try
+                {
+                    // Try to send email; SendEmailAsync will throw if EmailSettings missing or on failure
+                    await SendEmailAsync(user.Email, "Đặt lại mật khẩu", body);
+                    emailSent = true;
+                }
+                catch (Exception ex)
+                {
+                    emailSent = false;
+                    _logger.LogWarning(ex, "Failed to send password reset email to {Email}", user.Email);
+                }
+
+                // Never return token to client in normal responses. Token stored in DB and logged for admins.
+                return new ForgotPasswordResponse
+                {
+                    Success = true,
+                    Message = emailSent ? "Email đặt lại mật khẩu đã được gửi." : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
+                    EmailSent = emailSent,
+                    Token = token
+                };  
             }
-            catch
-            {
-                emailSent = false;
-            }
-
-            // Return token in response only if email was NOT sent (helpful for dev/testing)
-            return new ForgotPasswordResponse
-            {
-                Success = true,
-                Message = emailSent ? "Email đặt lại mật khẩu đã được gửi." : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
-                EmailSent = emailSent,
-                Token = emailSent ? null : token
-            };
-        }
 
         public async Task<bool> ResetPasswordAsync(string token, string newPassword)
         {
@@ -365,8 +373,11 @@ namespace HUIT_Library.Services
 
             if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass))
             {
+                _logger.LogWarning("EmailSettings.UserName or Password is missing; will not send email.");
                 throw new InvalidOperationException("EmailSettings are not configured (UserName/Password missing).");
             }
+
+            _logger.LogInformation("Attempting to send email to {To} using SMTP host {Host}:{Port} from {From}", toEmail, smtpHost, smtpPort, fromAddress);
 
             using var smtpClient = new SmtpClient(smtpHost)
             {
@@ -384,7 +395,45 @@ namespace HUIT_Library.Services
             };
             mail.To.Add(toEmail);
 
-            await smtpClient.SendMailAsync(mail);
+            // Ensure sender receives a copy for debugging/verification
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(smtpUser) && !mail.Bcc.Any())
+                {
+                    mail.Bcc.Add(smtpUser);
+                }
+            }
+            catch { /* ignore */ }
+
+            try
+            {
+                await smtpClient.SendMailAsync(mail);
+                _logger.LogInformation("Email successfully sent to {To}. BCC: {Bcc}", toEmail, smtpUser);
+            }
+            catch (SmtpException smtpEx)
+            {
+                _logger.LogError(smtpEx, "SMTP error when sending email to {To} via {Host}:{Port}", toEmail, smtpHost, smtpPort);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error when sending email to {To}", toEmail);
+                throw;
+            }
+        }
+
+        
+        public async Task<string?> GetLatestResetTokenByEmailAsync(string email)
+        {
+            var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.Email == email);
+            if (user == null) return null;
+
+            var tokenEntry = await _context.PasswordResetTokens
+                .Where(t => t.MaNguoiDung == user.MaNguoiDung)
+                .OrderByDescending(t => t.Id)
+                .FirstOrDefaultAsync();
+
+            return tokenEntry?.Token;
         }
     }
 }
