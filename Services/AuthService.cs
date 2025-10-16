@@ -289,10 +289,11 @@ namespace HUIT_Library.Services
 
         ///////////////////////////////////////////////////////
 
-        public async Task<bool> ForgotPasswordAsync(string email)
+        public async Task<ForgotPasswordResponse> ForgotPasswordAsync(string email)
         {
             var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null) return false;
+            if (user == null)
+                return new ForgotPasswordResponse { Success = false, Message = "Email không tồn tại trong hệ thống.", EmailSent = false };
 
             var token = Guid.NewGuid().ToString("N");
             var resetToken = new PasswordResetToken
@@ -311,17 +312,26 @@ namespace HUIT_Library.Services
 
             var body = $"<p>Nhấn vào link để đặt lại mật khẩu: <a href='{resetLink}'>Đặt lại ngay</a></p>";
 
+            var emailSent = false;
             try
             {
-                // Try to send email but do not fail the whole request if email sending is not configured or fails
+                // Try to send email; SendEmailAsync will throw if EmailSettings missing or on failure
                 await SendEmailAsync(user.Email, "Đặt lại mật khẩu", body);
+                emailSent = true;
             }
             catch
             {
-                // swallow exception so API returns success for token creation; administrators can investigate logs
+                emailSent = false;
             }
 
-            return true;
+            // Return token in response only if email was NOT sent (helpful for dev/testing)
+            return new ForgotPasswordResponse
+            {
+                Success = true,
+                Message = emailSent ? "Email đặt lại mật khẩu đã được gửi." : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
+                EmailSent = emailSent,
+                Token = emailSent ? null : token
+            };
         }
 
         public async Task<bool> ResetPasswordAsync(string token, string newPassword)
@@ -344,20 +354,18 @@ namespace HUIT_Library.Services
 
         private async Task SendEmailAsync(string toEmail, string subject, string body)
         {
-            var smtpHost = _configuration["Smtp:Host"] ?? "smtp.gmail.com";
-            var smtpPort = int.TryParse(_configuration["Smtp:Port"], out var p) ? p : 587;
-            var smtpUser = _configuration["Smtp:Username"] ?? "youremail@gmail.com";
-            var smtpPass = _configuration["Smtp:Password"] ?? "app_password";
-            var fromAddress = _configuration["Smtp:From"] ?? smtpUser;
-            var enableSsl = bool.TryParse(_configuration["Smtp:EnableSsl"], out var ssl) ? ssl : true;
+            // Read from EmailSettings section
+            var section = _configuration.GetSection("EmailSettings");
+            var smtpHost = section["Host"] ?? "smtp.gmail.com";
+            var smtpPort = int.TryParse(section["Port"], out var p) ? p : 587;
+            var enableSsl = bool.TryParse(section["EnableSSL"], out var ssl) ? ssl : true;
+            var smtpUser = section["UserName"];
+            var smtpPass = section["Password"];
+            var fromAddress = section["From"] ?? smtpUser;
 
-            // If placeholders are still present, skip sending to avoid authentication errors
-            if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass)
-                || smtpUser.Contains("youremail", StringComparison.OrdinalIgnoreCase)
-                || smtpPass.Contains("app_password", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(smtpUser) || string.IsNullOrWhiteSpace(smtpPass))
             {
-                // Do not throw; caller handles the fact that mail was not sent
-                return;
+                throw new InvalidOperationException("EmailSettings are not configured (UserName/Password missing).");
             }
 
             using var smtpClient = new SmtpClient(smtpHost)
@@ -369,14 +377,13 @@ namespace HUIT_Library.Services
 
             var mail = new MailMessage
             {
-                From = new MailAddress(fromAddress, "HUIT Library"),
+                From = new MailAddress(fromAddress ?? smtpUser, "HUIT Library"),
                 Subject = subject,
                 Body = body,
                 IsBodyHtml = true
             };
             mail.To.Add(toEmail);
 
-            // Let exceptions bubble up to caller who will swallow them
             await smtpClient.SendMailAsync(mail);
         }
     }

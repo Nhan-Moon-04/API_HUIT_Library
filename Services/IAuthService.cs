@@ -9,7 +9,7 @@ namespace HUIT_Library.Services
         string GenerateJwtToken(Models.NguoiDung user, string role);
 
 
-        Task<bool> ForgotPasswordAsync(string email);
+        Task<ForgotPasswordResponse> ForgotPasswordAsync(string email);
         Task<bool> ResetPasswordAsync(string token, string newPassword);
 
     }

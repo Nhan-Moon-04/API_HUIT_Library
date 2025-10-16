@@ -10,10 +10,12 @@ namespace HUIT_Library.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
+        private readonly IConfiguration _configuration;
 
-        public AuthController(IAuthService authService)
+        public AuthController(IAuthService authService, IConfiguration configuration)
         {
             _authService = authService;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -49,10 +51,14 @@ namespace HUIT_Library.Controllers
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
         {
             var result = await _authService.ForgotPasswordAsync(request.Email);
-            if (!result)
-                return BadRequest(new { message = "Email không tồn tại trong hệ thống." });
+            if (!result.Success)
+                return BadRequest(new { message = result.Message });
 
-            return Ok(new { message = "Email đặt lại mật khẩu đã được gửi." });
+            // Only return token in Development environment for testing
+            var env = _configuration["ASPNETCORE_ENVIRONMENT"] ?? "Production";
+            var tokenForResponse = env == "Development" ? result.Token : null;
+
+            return Ok(new { message = result.Message, emailSent = result.EmailSent, token = tokenForResponse });
         }
 
         [HttpPost("reset-password")]
