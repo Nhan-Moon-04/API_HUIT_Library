@@ -49,6 +49,8 @@ public partial class HuitThuVienContext : DbContext
 
     public virtual DbSet<TaiNguyen> TaiNguyens { get; set; }
 
+    public virtual DbSet<ThongBao> ThongBaos { get; set; }
+
     public virtual DbSet<VaiTro> VaiTros { get; set; }
 
     public virtual DbSet<ViPham> ViPhams { get; set; }
@@ -85,6 +87,9 @@ public partial class HuitThuVienContext : DbContext
                 .HasDefaultValueSql("(getdate())")
                 .HasColumnType("datetime");
             entity.Property(e => e.NgayDuyet).HasColumnType("datetime");
+            entity.Property(e => e.NgayTao)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
             entity.Property(e => e.ThoiGianBatDau).HasColumnType("datetime");
             entity.Property(e => e.ThoiGianKetThuc).HasColumnType("datetime");
 
@@ -368,6 +373,25 @@ public partial class HuitThuVienContext : DbContext
             entity.Property(e => e.DonViTinh).HasMaxLength(50);
             entity.Property(e => e.MoTa).HasMaxLength(255);
             entity.Property(e => e.TenTaiNguyen).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<ThongBao>(entity =>
+        {
+            entity.HasKey(e => e.MaThongBao).HasName("PK__ThongBao__04DEB54E1412DB7D");
+
+            entity.ToTable("ThongBao");
+
+            entity.Property(e => e.DaDoc).HasDefaultValue(false);
+            entity.Property(e => e.LoaiThongBao).HasMaxLength(50);
+            entity.Property(e => e.NgayTao)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.TieuDe).HasMaxLength(255);
+
+            entity.HasOne(d => d.MaNguoiDungNavigation).WithMany(p => p.ThongBaos)
+                .HasForeignKey(d => d.MaNguoiDung)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_ThongBao_NguoiDung");
         });
 
         modelBuilder.Entity<VaiTro>(entity =>

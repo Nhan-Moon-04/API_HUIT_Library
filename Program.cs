@@ -4,6 +4,7 @@ using HUIT_Library.Services.IServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,10 +19,11 @@ builder.Services.AddDbContext<HuitThuVienContext>(options =>
 // Add Authentication services
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IPasswordHashService, PasswordHashService>();
-// Register profile service
 builder.Services.AddScoped<IProfileService, ProfileService>();
+builder.Services.AddScoped<ILoaiPhongServices, LoaiPhongServices>();
+builder.Services.AddScoped<IBookingService, BookingService>();
 
-// Configure JWT authentication using GetValue to read configuration safely
+// Configure JWT authentication
 var jwtKey = builder.Configuration.GetValue<string>("Jwt:Key") ?? "P6n@8X9z#A1k$F3q*L7v!R2y^C5m&E0w";
 var jwtIssuer = builder.Configuration.GetValue<string>("Jwt:Issuer") ?? "HUIT_Library";
 var jwtAudience = builder.Configuration.GetValue<string>("Jwt:Audience") ?? "HUIT_Library_Users";
@@ -44,7 +46,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// Add Authorization
 builder.Services.AddAuthorization();
 
 // Add CORS
@@ -53,16 +54,41 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowAll", cors =>
     {
         cors.AllowAnyOrigin()
-               .AllowAnyMethod()
-               .AllowAnyHeader();
+            .AllowAnyMethod()
+            .AllowAnyHeader();
     });
 });
 
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// ✅ Add Swagger + JWT Auth config
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new() { Title = "HUIT Library API", Version = "v1" });
+
+    // ⚡ Cấu hình nút Authorize để nhập JWT Token
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Description = "Nhập token theo dạng: Bearer {token}",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            new List<string>()
+        }
+    });
 });
 
 var app = builder.Build();

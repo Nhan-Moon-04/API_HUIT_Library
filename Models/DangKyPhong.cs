@@ -27,6 +27,8 @@ public partial class DangKyPhong
 
     public string? GhiChu { get; set; }
 
+    public DateTime NgayTao { get; set; }
+
     public virtual NguoiDung MaNguoiDungNavigation { get; set; } = null!;
 
     public virtual Phong MaPhongNavigation { get; set; } = null!;

@@ -32,4 +32,6 @@ public partial class NguoiDung
     public virtual QuanLyKyThuat? QuanLyKyThuat { get; set; }
 
     public virtual SinhVien? SinhVien { get; set; }
+
+    public virtual ICollection<ThongBao> ThongBaos { get; set; } = new List<ThongBao>();
 }
