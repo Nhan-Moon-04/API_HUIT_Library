@@ -19,8 +19,6 @@ public partial class DangKyPhong
 
     public int? MaTrangThai { get; set; }
 
-    public DateTime? NgayDangKy { get; set; }
-
     public int? NguoiDuyet { get; set; }
 
     public DateTime? NgayDuyet { get; set; }

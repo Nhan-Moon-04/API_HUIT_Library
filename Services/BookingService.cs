@@ -56,7 +56,24 @@ namespace HUIT_Library.Services
                 _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
 
                 if (rows > 0)
+                {
+                    // Try to find inserted record to include details in notification
+                    try
+                    {
+                        var inserted = await _context.DangKyPhongs
+                            .Where(d => d.MaNguoiDung == userId && d.ThoiGianBatDau == request.ThoiGianBatDau && d.ThoiGianKetThuc == request.ThoiGianKetThuc)
+                            .OrderByDescending(d => d.MaDangKy)
+                            .FirstOrDefaultAsync();
+
+                        await CreateNotificationForBookingAsync(userId, request, inserted?.MaDangKy);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to create notification after successful sp_DangKyPhong (rows>0).");
+                    }
+
                     return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
+                }
 
                 // If stored proc returns 0 rows, verify whether a matching DangKyPhong record was inserted.
                 try
@@ -69,6 +86,16 @@ namespace HUIT_Library.Services
                     if (inserted != null)
                     {
                         _logger.LogInformation("Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning 0 rows.", inserted.MaDangKy);
+
+                        try
+                        {
+                            await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to create notification after detecting inserted record.");
+                        }
+
                         return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
                     }
                 }
@@ -86,6 +113,28 @@ namespace HUIT_Library.Services
                 // Log exception if logger is available. For now return a generic error message.
                 return (false, "Lỗi hệ thống khi gọi stored procedure. Vui lòng thử lại.");
             }
+        }
+
+        private async Task CreateNotificationForBookingAsync(int userId, CreateBookingRequest request, int? maDangKy)
+        {
+            var title = "Yêu cầu mượn phòng đã được gửi";
+            var content = $"Yêu cầu mượn phòng (Loại: {request.MaLoaiPhong}) từ {request.ThoiGianBatDau:u} đến {request.ThoiGianKetThuc:u} đã được gửi. Vui lòng chờ duyệt.";
+            if (maDangKy.HasValue)
+            {
+                content += $" (Mã đăng ký: {maDangKy.Value})";
+            }
+
+            var thongBao = new ThongBao
+            {
+                MaNguoiDung = userId,
+                TieuDe = title,
+                NoiDung = content,
+                NgayTao = DateTime.UtcNow,
+                DaDoc = false
+            };
+
+            _context.ThongBaos.Add(thongBao);
+            await _context.SaveChangesAsync();
         }
 
         public async Task<(bool Success, string? Message)> ExtendBookingAsync(int userId, ExtendBookingRequest request)

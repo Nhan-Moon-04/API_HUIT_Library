@@ -83,9 +83,6 @@ public partial class HuitThuVienContext : DbContext
             entity.Property(e => e.GhiChu).HasMaxLength(255);
             entity.Property(e => e.LyDo).HasMaxLength(255);
             entity.Property(e => e.MaTrangThai).HasDefaultValue(1);
-            entity.Property(e => e.NgayDangKy)
-                .HasDefaultValueSql("(getdate())")
-                .HasColumnType("datetime");
             entity.Property(e => e.NgayDuyet).HasColumnType("datetime");
             entity.Property(e => e.NgayTao)
                 .HasDefaultValueSql("(getdate())")

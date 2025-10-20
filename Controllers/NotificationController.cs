@@ -1,4 +1,4 @@
-using HUIT_Library.DTOs.DTO;
+﻿using HUIT_Library.DTOs.DTO;
 using HUIT_Library.Services.IServices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -26,7 +26,7 @@ namespace HUIT_Library.Controllers
 
             var items = await _notificationService.GetNotificationsForUserAsync(userId);
             if (!items.Any())
-                return Ok(new { message = "Hi?n t?i b?n ch?a c� th�ng b�o n�o." });
+                return Ok(new { message = "Hiện tại bạn chưa có thông báo nào." });
 
             return Ok(items);
         }
