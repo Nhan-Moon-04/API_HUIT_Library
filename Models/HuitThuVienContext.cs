@@ -18,6 +18,8 @@ public partial class HuitThuVienContext : DbContext
     public virtual DbSet<ChucVu> ChucVus { get; set; }
 
     public virtual DbSet<DangKyPhong> DangKyPhongs { get; set; }
+        
+    public virtual DbSet<DanhGium> DanhGia { get; set; }
 
     public virtual DbSet<GiangVien> GiangViens { get; set; }
 
@@ -99,6 +101,22 @@ public partial class HuitThuVienContext : DbContext
                 .HasForeignKey(d => d.MaPhong)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_DangKyPhong_Phong");
+        });
+
+        modelBuilder.Entity<DanhGium>(entity =>
+        {
+            entity.HasKey(e => e.MaDanhGia).HasName("PK__DanhGia__AA9515BF600F2FA1");
+
+            entity.Property(e => e.LoaiDoiTuong).HasMaxLength(50);
+            entity.Property(e => e.NgayDanhGia)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.NoiDung).HasMaxLength(500);
+
+            entity.HasOne(d => d.MaNguoiDungNavigation).WithMany(p => p.DanhGia)
+                .HasForeignKey(d => d.MaNguoiDung)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_DanhGia_NguoiDung");
         });
 
         modelBuilder.Entity<GiangVien>(entity =>

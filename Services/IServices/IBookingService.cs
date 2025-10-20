@@ -6,5 +6,6 @@ namespace HUIT_Library.Services.IServices
     {
         Task<(bool Success, string? Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request);
         Task<(bool Success, string? Message)> ExtendBookingAsync(int userId, ExtendBookingRequest request);
+        Task<(bool Success, string? Message)> CompleteBookingAsync(int userId, int maDangKy);
     }
 }

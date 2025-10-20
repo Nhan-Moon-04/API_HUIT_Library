@@ -62,5 +62,19 @@ namespace HUIT_Library.Controllers
 
             return Ok(new { message });
         }
+
+        [Authorize]
+        [HttpPost("complete/{maDangKy}")]
+        public async Task<IActionResult> Complete(int maDangKy)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { message = "Người dùng chưa đăng nhập hoặc thông tin không hợp lệ." });
+
+            var (success, message) = await _bookingService.CompleteBookingAsync(userId, maDangKy);
+            if (!success) return BadRequest(new { message });
+
+            return Ok(new { message });
+        }
     }
 }

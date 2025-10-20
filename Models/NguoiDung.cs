@@ -21,6 +21,8 @@ public partial class NguoiDung
 
     public virtual ICollection<DangKyPhong> DangKyPhongs { get; set; } = new List<DangKyPhong>();
 
+    public virtual ICollection<DanhGium> DanhGia { get; set; } = new List<DanhGium>();
+
     public virtual GiangVien? GiangVien { get; set; }
 
     public virtual VaiTro MaVaiTroNavigation { get; set; } = null!;
