@@ -21,7 +21,7 @@ public partial class NguoiDung
 
     public virtual ICollection<DangKyPhong> DangKyPhongs { get; set; } = new List<DangKyPhong>();
 
-    public virtual ICollection<DanhGium> DanhGia { get; set; } = new List<DanhGium>();
+    public virtual ICollection<DanhGiaTv> DanhGiaTvs { get; set; } = new List<DanhGiaTv>();
 
     public virtual GiangVien? GiangVien { get; set; }
 
@@ -30,6 +30,8 @@ public partial class NguoiDung
     public virtual NhanVienThuVien? NhanVienThuVien { get; set; }
 
     public virtual ICollection<PasswordResetToken> PasswordResetTokens { get; set; } = new List<PasswordResetToken>();
+
+    public virtual ICollection<PhienChat> PhienChats { get; set; } = new List<PhienChat>();
 
     public virtual QuanLyKyThuat? QuanLyKyThuat { get; set; }
 

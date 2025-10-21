@@ -298,16 +298,33 @@ namespace HUIT_Library.Services
             if (user == null)
                 return new ForgotPasswordResponse { Success = false, Message = "Email không tồn tại trong hệ thống.", EmailSent = false };
 
-            var token = Guid.NewGuid().ToString("N");
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
+            var nowVietnam = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone);
 
-            // Log token for admin/debug (do NOT expose token to client in production)
-            _logger.LogInformation("Password reset token generated for {Email}: {Token}", user.Email, token);
+            // 🔒 Kiểm tra số lần gửi trong 15 phút qua
+            var fifteenMinutesAgo = nowVietnam.AddMinutes(-15);
+            var recentRequests = await _context.PasswordResetTokens
+                .CountAsync(t => t.MaNguoiDung == user.MaNguoiDung && t.ExpireAt >= fifteenMinutesAgo);
+
+            if (recentRequests >= 3)
+            {
+                return new ForgotPasswordResponse
+                {
+                    Success = false,
+                    Message = "Bạn đã yêu cầu đặt lại mật khẩu quá nhiều lần. Vui lòng thử lại sau 15 phút.",
+                    EmailSent = false
+                };
+            }
+
+            // 🔑 Tạo token
+            var token = Guid.NewGuid().ToString("N");
+            var expireAtVietnam = nowVietnam.AddMinutes(5);
 
             var resetToken = new PasswordResetToken
             {
                 MaNguoiDung = user.MaNguoiDung,
                 Token = token,
-                ExpireAt = DateTime.UtcNow.AddHours(1),
+                ExpireAt = expireAtVietnam,
                 Used = false
             };
 
@@ -316,15 +333,13 @@ namespace HUIT_Library.Services
 
             var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "https://1dx4jm3x-4200.asse.devtunnels.ms/reset-password";
             var resetLink = $"{frontendUrl}?token={token}";
-
-            var body = $"<p>Nhấn vào link để đặt lại mật khẩu: <a href='{resetLink}'>Đặt lại ngay</a></p>";
+            var body = $"<p>Nhấn vào link để đặt lại mật khẩu (hiệu lực trong 5 phút): <a href='{resetLink}'>Đặt lại ngay</a></p>";
 
             var emailSent = false;
             try
             {
-                // Try to send email; SendEmailAsync will throw if EmailSettings missing or on failure
                 await SendEmailAsync(user.Email, "Đặt lại mật khẩu", body);
-                emailSent = true; 
+                emailSent = true;
             }
             catch (Exception ex)
             {
@@ -332,14 +347,14 @@ namespace HUIT_Library.Services
                 _logger.LogWarning(ex, "Failed to send password reset email to {Email}", user.Email);
             }
 
-            // Never return token to client in normal responses. Token stored in DB and logged for admins.
             return new ForgotPasswordResponse
             {
                 Success = true,
-                Message = emailSent ? "Email đặt lại mật khẩu đã được gửi." : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
-                EmailSent = emailSent,
-                Token = token
-            };  
+                Message = emailSent
+                    ? "Email đặt lại mật khẩu đã được gửi."
+                    : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
+                EmailSent = emailSent
+            };
         }
 
         public async Task<bool> ResetPasswordAsync(string token, string newPassword)
@@ -347,7 +362,15 @@ namespace HUIT_Library.Services
             var resetToken = await _context.PasswordResetTokens
                 .FirstOrDefaultAsync(t => t.Token == token && (t.Used == null || t.Used == false));
 
-            if (resetToken == null || resetToken.ExpireAt < DateTime.UtcNow)
+            if (resetToken == null)
+                return false;
+
+            // Chuyển UTC -> giờ Việt Nam
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
+            var nowVietnam = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone);
+
+            // Kiểm tra hạn
+            if (resetToken.ExpireAt < nowVietnam)
                 return false;
 
             var user = await _context.NguoiDungs.FindAsync(resetToken.MaNguoiDung);
@@ -359,6 +382,7 @@ namespace HUIT_Library.Services
 
             return true;
         }
+
 
         public async Task<bool> ChangePasswordAsync(string maDangNhap, string currentPassword, string newPassword)
         {
