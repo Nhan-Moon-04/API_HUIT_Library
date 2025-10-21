@@ -262,7 +262,7 @@ namespace HUIT_Library.Services
                 NoiDung = $"Cảm ơn bạn đã sử dụng phòng. Vui lòng đánh giá trải nghiệm của bạn tại: {reviewUrl}?maDangKy={maDangKy}",
                 NgayTao = DateTime.UtcNow,
                 DaDoc = false
-            };  
+            };
 
             _context.ThongBaos.Add(thongBao);
             try
