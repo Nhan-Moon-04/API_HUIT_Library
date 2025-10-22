@@ -1,9 +1,11 @@
 ﻿using HUIT_Library.DTOs.DTO;
 using HUIT_Library.DTOs.Request;
 using HUIT_Library.Services.IServices;
+using HUIT_Library.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace HUIT_Library.Controllers;
 
@@ -12,11 +14,13 @@ namespace HUIT_Library.Controllers;
 public class ChatController : ControllerBase
 {
     private readonly IChatService _chatService;
+    private readonly IBotpressService _botpressService;
     private readonly ILogger<ChatController> _logger;
 
-    public ChatController(IChatService chatService, ILogger<ChatController> logger)
+    public ChatController(IChatService chatService, IBotpressService botpressService, ILogger<ChatController> logger)
     {
         _chatService = chatService;
+        _botpressService = botpressService;
         _logger = logger;
     }
 
@@ -260,4 +264,102 @@ public class ChatController : ControllerBase
         var botResponse = await _chatService.TestBotDirectly("Xin chào, bạn là ai?", "user123");
         return Ok(botResponse);
     }
+
+    /// <summary>
+    /// Webhook endpoint để nhận tin nhắn từ Botpress
+    /// URL này sẽ được cấu hình trong Botpress webhook settings
+    /// </summary>
+    [HttpPost("webhook/botpress")]
+    public async Task<IActionResult> BotpressWebhook([FromBody] JsonElement webhookData)
+    {
+        try
+        {
+            _logger.LogInformation("Received Botpress webhook: {WebhookData}", webhookData.GetRawText());
+
+            // Gọi service để xử lý webhook
+            await _botpressService.HandleWebhookAsync(webhookData);
+
+            return Ok(new { status = "success", message = "Webhook processed successfully" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing Botpress webhook");
+            return StatusCode(500, new { status = "error", message = "Failed to process webhook" });
+        }
+    }
+
+    /// <summary>
+    /// Test endpoint để kiểm tra webhook (có thể xóa sau khi test xong)
+    /// </summary>
+    [HttpPost("webhook/test")]
+    public async Task<IActionResult> TestWebhook([FromBody] JsonElement testData)
+    {
+        try
+        {
+            _logger.LogInformation("Test webhook received: {TestData}", testData.GetRawText());
+            
+            // Test với dữ liệu mẫu
+            var sampleWebhookData = JsonSerializer.Deserialize<JsonElement>("""
+                {
+                    "user": {
+                        "id": "123"
+                    },
+                    "payload": {
+                        "text": "Đây là tin nhắn test từ webhook"
+                    }
+                }
+                """);
+
+            await _botpressService.HandleWebhookAsync(sampleWebhookData);
+
+            return Ok(new { 
+                status = "success", 
+                message = "Test webhook processed successfully",
+                receivedData = testData.GetRawText()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing test webhook");
+            return StatusCode(500, new { status = "error", message = "Failed to process test webhook" });
+        }
+    }
+
+    /// <summary>
+    /// Debug endpoint để kiểm tra bot response có được lưu vào database không
+    /// </summary>
+    [HttpPost("debug/bot-message")]
+    public async Task<IActionResult> DebugBotMessage([FromBody] DebugBotMessageRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("Debug: Testing bot message save for user {UserId}", request.UserId);
+            
+            // Test direct bot communication
+            var botResponse = await _botpressService.SendMessageToBotAsync(request.Message, request.UserId);
+            
+            // Check if message was saved
+            var savedMessages = await _chatService.GetMessagesAsync(request.SessionId ?? 0);
+            var botMessages = savedMessages.Where(m => m.LaBot == true).OrderByDescending(m => m.ThoiGianGui).Take(3);
+            
+            return Ok(new { 
+                success = true,
+                botResponse = botResponse,
+                recentBotMessages = botMessages,
+                message = "Bot message test completed. Check recentBotMessages to see if bot response was saved."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in debug bot message test");
+            return StatusCode(500, new { success = false, error = ex.Message });
+        }
+    }
+}
+
+public class DebugBotMessageRequest
+{
+    public string UserId { get; set; } = "";
+    public string Message { get; set; } = "";
+    public int? SessionId { get; set; }
 }

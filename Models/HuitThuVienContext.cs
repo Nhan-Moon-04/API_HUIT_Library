@@ -15,6 +15,8 @@ public partial class HuitThuVienContext : DbContext
     {
     }
 
+    public virtual DbSet<BotConversation> BotConversations { get; set; }
+
     public virtual DbSet<ChucVu> ChucVus { get; set; }
 
     public virtual DbSet<DangKyPhong> DangKyPhongs { get; set; }
@@ -68,6 +70,28 @@ public partial class HuitThuVienContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.UseCollation("Vietnamese_CI_AS");
+
+        modelBuilder.Entity<BotConversation>(entity =>
+        {
+            entity.ToTable("BotConversation");
+
+            entity.HasIndex(e => e.ConversationId, "IX_BotConversation_ConversationId");
+
+            entity.HasIndex(e => new { e.UserId, e.IsActive }, "IX_BotConversation_UserId_IsActive");
+
+            entity.Property(e => e.ConversationId).HasMaxLength(100);
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.IsActive).HasDefaultValue(true);
+            entity.Property(e => e.LastUsedAt).HasColumnType("datetime");
+            entity.Property(e => e.UserKey).HasMaxLength(500);
+
+            entity.HasOne(d => d.User).WithMany(p => p.BotConversations)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_BotConversation_NguoiDung");
+        });
 
         modelBuilder.Entity<ChucVu>(entity =>
         {

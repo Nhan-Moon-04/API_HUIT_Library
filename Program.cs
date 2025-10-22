@@ -12,6 +12,9 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 
+// Add HttpClient for API calls
+builder.Services.AddHttpClient();
+
 // Add Entity Framework
 builder.Services.AddDbContext<HuitThuVienContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
