@@ -18,4 +18,7 @@ public interface IChatService
 
     // Session info
     Task<object?> GetSessionInfoAsync(int maPhienChat, int userId);
+
+    // Debug method
+    Task<string> TestBotDirectly(string message, string userId);
 }

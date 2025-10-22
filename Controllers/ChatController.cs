@@ -69,7 +69,7 @@ public class ChatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting session info for session {SessionId}", maPhienChat);
-            return StatusCode(500, new { message = "L?i h? th?ng" });
+            return StatusCode(500, new { message = "Lỗi hệ thống" });
         }
     }
 
@@ -112,28 +112,40 @@ public class ChatController : ControllerBase
 
     [Authorize]
     [HttpPost("bot-session/create")]
-    public async Task<IActionResult> CreateBotSession([FromBody] CreateBotSessionRequest request)
+    public async Task<IActionResult> CreateBotSession([FromBody] CreateBotSessionRequest? request = null)
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+        var emailClaim = User.FindFirst(ClaimTypes.Email)?.Value;
+
         if (!int.TryParse(userIdClaim, out var userId))
-            return Unauthorized();
+        {
+            _logger.LogWarning("Unauthorized bot session create attempt. Invalid user id claim: {UserIdClaim}. Name: {Name}, Email: {Email}", userIdClaim, userNameClaim, emailClaim);
+            return Unauthorized(new { message = "Invalid user token" });
+        }
+
+        _logger.LogInformation("User {UserId} ({Name}) requests bot session. InitialMessage present: {HasInitial}", userId, userNameClaim, !string.IsNullOrEmpty(request?.InitialMessage));
 
         try
         {
-            var session = await _chatService.CreateBotSessionAsync(userId, request);
-            if (session == null) return BadRequest(new { message = "Không th? t?o phiên chat v?i bot" });
+            var session = await _chatService.CreateBotSessionAsync(userId, request ?? new CreateBotSessionRequest());
+            if (session == null)
+            {
+                _logger.LogWarning("Failed to create bot session for user id {UserId} - user not found or cannot create session.", userId);
+                return NotFound(new { message = "Người dùng không tồn tại hoặc không thể tạo phiên chat với bot" });
+            }
 
             return Ok(new
             {
                 maPhienChat = session.MaPhienChat,
                 coBot = session.CoBot,
-                message = "Phiên chat v?i bot dã du?c t?o thành công. S? d?ng endpoint /api/Chat/bot/message/send d? g?i tin nh?n."
+                message = "Phiên chat với bot đã được tạo thành công. Sử dụng endpoint /api/Chat/bot/message/send để gửi tin nhắn."
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating bot session for user {UserId}", userId);
-            return StatusCode(500, new { message = "L?i h? th?ng khi t?o phiên chat v?i bot" });
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tạo phiên chat với bot" });
         }
     }
 
@@ -146,7 +158,7 @@ public class ChatController : ControllerBase
             return Unauthorized();
 
         var msg = await _chatService.SendMessageAsync(userId, request);
-        if (msg == null) return BadRequest(new { message = "Phiên chat không t?n t?i" });
+        if (msg == null) return BadRequest(new { message = "Phiên chat không tồn tại" });
 
         return Ok(new MessageDto
         {
@@ -173,7 +185,7 @@ public class ChatController : ControllerBase
             if (response == null)
                 return BadRequest(new
                 {
-                    message = "Phiên chat bot không t?n t?i ho?c không h?p l?. Ð?m b?o b?n dã t?o phiên chat bot b?ng /api/Chat/bot-session/create"
+                    message = "Phiên chat bot không tồn tại hoặc không hợp lệ. Đảm bảo bạn đã tạo phiên chat bot bằng /api/Chat/bot-session/create"
                 });
 
             return Ok(response);
@@ -181,7 +193,37 @@ public class ChatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error sending message to bot for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
-            return StatusCode(500, new { message = "L?i h? th?ng khi g?i tin nh?n d?n bot" });
+            return StatusCode(500, new { message = "Lỗi hệ thống khi gửi tin nhắn đến bot" });
+        }
+    }
+
+    [Authorize]
+    [HttpPost("bot/test")]
+    public async Task<IActionResult> TestBotConnection()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        try
+        {
+            _logger.LogInformation("Testing bot connection for user {UserId}", userId);
+
+            var testMessage = "Xin chào! Đây là tin nhắn test.";
+            var botResponse = await _chatService.TestBotDirectly(testMessage, userId.ToString());
+
+            return Ok(new
+            {
+                success = true,
+                testMessage = testMessage,
+                botResponse = botResponse,
+                message = "Bot connection test completed. Check logs for details."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error testing bot connection for user {UserId}", userId);
+            return StatusCode(500, new { message = "Lỗi khi test kết nối bot", error = ex.Message });
         }
     }
 
@@ -195,11 +237,11 @@ public class ChatController : ControllerBase
 
         var success = await _chatService.RequestStaffAsync(userId, request);
         if (!success)
-            return BadRequest(new { message = "Không th? yêu c?u h? tr? t? nhân viên" });
+            return BadRequest(new { message = "Không thể yêu cầu hỗ trợ từ nhân viên" });
 
         return Ok(new
         {
-            message = "Ðã yêu c?u h? tr? t? nhân viên thành công. Vui lòng ch? nhân viên tham gia vào cu?c trò chuy?n.",
+            message = "Đã yêu cầu hỗ trợ từ nhân viên thành công. Vui lòng chờ nhân viên tham gia.",
             success = true
         });
     }
@@ -210,5 +252,12 @@ public class ChatController : ControllerBase
     {
         var messages = await _chatService.GetMessagesAsync(maPhienChat);
         return Ok(messages);
+    }
+
+    [HttpGet("test-bot")]
+    public async Task<IActionResult> TestBot()
+    {
+        var botResponse = await _chatService.TestBotDirectly("Xin chào, bạn là ai?", "user123");
+        return Ok(botResponse);
     }
 }

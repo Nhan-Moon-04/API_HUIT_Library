@@ -63,7 +63,10 @@ namespace HUIT_Library.Services
         {
             var user = await _context.NguoiDungs.FindAsync(userId);
             if (user == null)
+            {
+                _logger.LogWarning("Cannot create bot session: user with ID {UserId} not found.", userId);
                 return null;
+            }
 
             var session = new PhienChat
             {
@@ -77,7 +80,7 @@ namespace HUIT_Library.Services
             await _context.SaveChangesAsync();
 
             // Send initial message if provided
-            if (!string.IsNullOrEmpty(request.InitialMessage))
+            if (!string.IsNullOrEmpty(request?.InitialMessage))
             {
                 await SendMessageToBotAsync(userId, new SendMessageRequest
                 {
@@ -253,6 +256,26 @@ namespace HUIT_Library.Services
             };
 
             return staffKeywords.Any(keyword => message.ToLower().Contains(keyword.ToLower()));
+        }
+
+        // Test method for diagnosing bot issues
+        public async Task<string> TestBotDirectly(string message, string userId)
+        {
+            _logger.LogInformation("=== DIRECT BOT TEST ===");
+            _logger.LogInformation("Test message: {Message}", message);
+            _logger.LogInformation("User ID: {UserId}", userId);
+
+            try
+            {
+                var response = await _botpressService.SendMessageToBotAsync(message, userId);
+                _logger.LogInformation("Bot response received: {Response}", response);
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in direct bot test");
+                return $"Lỗi trong test: {ex.Message}";
+            }
         }
     }
 }

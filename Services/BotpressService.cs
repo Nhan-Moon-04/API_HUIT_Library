@@ -1,108 +1,134 @@
 ﻿using HUIT_Library.DTOs.DTO;
-using HUIT_Library.DTOs.Request;
 using HUIT_Library.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using System.Text;
 using System.Text.Json;
 
 namespace HUIT_Library.Services;
 
 public class BotpressService : IBotpressService
 {
-    private readonly HttpClient _httpClient;
     private readonly HuitThuVienContext _context;
     private readonly ILogger<BotpressService> _logger;
-    private readonly string _botpressApiKey;
-    private readonly string _botpressBaseUrl;
 
-    public BotpressService(HttpClient httpClient, HuitThuVienContext context, IConfiguration configuration, ILogger<BotpressService> logger)
+    public BotpressService(HuitThuVienContext context, ILogger<BotpressService> logger)
     {
-        _httpClient = httpClient;
         _context = context;
         _logger = logger;
-        _botpressApiKey = "bp_bak_qDPXWz4ixJdg9BR7B4vBkNbUbh9NSVi17s0Z";
-        _botpressBaseUrl = "https://api.botpress.cloud";
-
-        // Configure HttpClient headers
-        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_botpressApiKey}");
-        _httpClient.DefaultRequestHeaders.Add("x-bot-id", "85fc502b-d03f-4d3c-ba1b-1942a6389237");
-
-        _logger.LogInformation("BotpressService initialized with API key: {ApiKeyPrefix}...", _botpressApiKey.Substring(0, Math.Min(10, _botpressApiKey.Length)));
     }
 
-    public async Task<string> SendMessageToBotAsync(string message, string userId)
+    // ✅ Lưu tin nhắn từ webhook vào DB
+    public async Task SaveBotMessageAsync(string userId, string text)
     {
         try
         {
-            _logger.LogInformation("Sending message to Botpress API - User: {UserId}, Message: {Message}", userId, message);
+            var session = await _context.PhienChats
+                .Where(p => p.MaNguoiDung.ToString() == userId && p.CoBot == true)
+                .OrderByDescending(p => p.ThoiGianBatDau)
+                .FirstOrDefaultAsync();
 
-            var payload = new
+            if (session == null)
             {
-                type = "text",
-                payload = new { text = message },
-                conversationId = $"user-{userId}",
-                userId = userId
-            };
-
-            var json = JsonSerializer.Serialize(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            _logger.LogDebug("Botpress API request payload: {Payload}", json);
-
-            var response = await _httpClient.PostAsync($"{_botpressBaseUrl}/v1/chat/messages", content);
-
-            _logger.LogInformation("Botpress API response status: {StatusCode}", response.StatusCode);
-
-            if (response.IsSuccessStatusCode)
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                _logger.LogDebug("Botpress API response content: {ResponseContent}", responseContent);
-
-                var responseJson = JsonDocument.Parse(responseContent);
-
-                // Extract bot response from Botpress API response
-                if (responseJson.RootElement.TryGetProperty("responses", out var responses) &&
-                    responses.GetArrayLength() > 0)
+                // Try to parse userId to int; if fails, skip creating session
+                if (!int.TryParse(userId, out var parsedUserId))
                 {
-                    var firstResponse = responses[0];
-                    if (firstResponse.TryGetProperty("payload", out var responsePayload) &&
-                        responsePayload.TryGetProperty("text", out var text))
-                    {
-                        var botResponse = text.GetString() ?? "Xin lỗi, tôi không hiểu yêu cầu của bạn.";
-                        _logger.LogInformation("Bot response: {BotResponse}", botResponse);
-                        return botResponse;
-                    }
+                    _logger.LogWarning("Cannot parse userId '{UserId}' to int when saving bot message", userId);
+                    return;
                 }
 
-                _logger.LogWarning("Could not parse bot response from Botpress API");
-                return "Xin l?i, tôi không hi?u câu h?i c?a b?n.";
+                session = new PhienChat
+                {
+                    MaNguoiDung = parsedUserId,
+                    CoBot = true,
+                    ThoiGianBatDau = DateTime.UtcNow
+                };
+                _context.PhienChats.Add(session);
+                await _context.SaveChangesAsync();
             }
-            else
+
+            var message = new TinNhan
             {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                _logger.LogError("Botpress API error - Status: {StatusCode}, Content: {ErrorContent}", response.StatusCode, errorContent);
-            }
+                MaPhienChat = session.MaPhienChat,
+                MaNguoiGui = 0,
+                NoiDung = text,
+                ThoiGianGui = DateTime.UtcNow,
+                LaBot = true
+            };
+
+            _context.TinNhans.Add(message);
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("✅ Đã lưu tin nhắn từ Botpress cho user {UserId}: {Text}", userId, text);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error calling Botpress API for user {UserId} with message '{Message}'", userId, message);
+            _logger.LogError(ex, "❌ Lỗi lưu tin nhắn từ Botpress cho user {UserId}", userId);
         }
-
-        return "Xin lỗi, có lỗi xảy ra với bot, Bạn có muốn liên hệ với nhân viên không?";
     }
 
+    // ✅ Nhận dữ liệu từ webhook (controller gọi tới)
+    public async Task HandleWebhookAsync(JsonElement body)
+    {
+        try
+        {
+            string userId = "unknown";
+            string text = string.Empty;
+
+            // Safely extract user.id
+            if (body.TryGetProperty("user", out JsonElement userElem) && userElem.ValueKind != JsonValueKind.Null)
+            {
+                if (userElem.TryGetProperty("id", out JsonElement idElem))
+                {
+                    if (idElem.ValueKind == JsonValueKind.String)
+                        userId = idElem.GetString() ?? "unknown";
+                    else
+                        userId = idElem.GetRawText();
+                }
+            }
+
+            // Safely extract payload.text
+            if (body.TryGetProperty("payload", out JsonElement payloadElem) && payloadElem.ValueKind != JsonValueKind.Null)
+            {
+                if (payloadElem.TryGetProperty("text", out JsonElement textElem))
+                {
+                    if (textElem.ValueKind == JsonValueKind.String)
+                        text = textElem.GetString() ?? string.Empty;
+                    else
+                        text = textElem.GetRawText();
+                }
+            }
+
+            if (!string.IsNullOrEmpty(text))
+                await SaveBotMessageAsync(userId, text);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi xử lý webhook payload từ Botpress");
+        }
+    }
+
+    // Send message to bot (stub/simulated implementation)
+    public async Task<string> SendMessageToBotAsync(string message, string userId)
+    {
+        // For now, simulate a bot response. Replace with real API call when available.
+        await Task.Yield();
+        _logger.LogInformation("Sending message to bot for user {UserId}: {Message}", userId, message);
+        var simulatedResponse = $"Bot trả lời: Tôi đã nhận được - {message}";
+        return simulatedResponse;
+    }
+
+    // Process bot response and save to DB as a bot message, returning MessageDto
     public async Task<MessageDto?> ProcessBotResponseAsync(string botResponse, int maPhienChat)
     {
         try
         {
-            _logger.LogInformation("Processing bot response for session {SessionId}: {BotResponse}", maPhienChat, botResponse);
+            var session = await _context.PhienChats.FindAsync(maPhienChat);
+            if (session == null) return null;
 
-            // Create bot message in database
             var botMessage = new TinNhan
             {
                 MaPhienChat = maPhienChat,
-                MaNguoiGui = 0, // 0 indicates system/bot message
+                MaNguoiGui = 0,
                 NoiDung = botResponse,
                 ThoiGianGui = DateTime.UtcNow,
                 LaBot = true
@@ -110,8 +136,6 @@ public class BotpressService : IBotpressService
 
             _context.TinNhans.Add(botMessage);
             await _context.SaveChangesAsync();
-
-            _logger.LogInformation("Successfully saved bot message {MessageId} for session {SessionId}", botMessage.MaTinNhan, maPhienChat);
 
             return new MessageDto
             {
@@ -125,7 +149,7 @@ public class BotpressService : IBotpressService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing bot response for session {SessionId}: {BotResponse}", maPhienChat, botResponse);
+            _logger.LogError(ex, "Lỗi khi xử lý phản hồi từ Botpress");
             return null;
         }
     }
