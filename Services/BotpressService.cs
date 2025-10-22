@@ -192,45 +192,40 @@ public class BotpressService : IBotpressService
         return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, vietnamTimeZone);
     }
 
-    // Poll for bot response with retries
+    // Poll for bot response using GET method like in your example
     private async Task<string?> PollForBotResponseAsync(string conversationId, string userKey, string currentUserId, int maxRetries = 6)
     {
         try
         {
             var getMessagesUrl = $"{_botpressBaseUrl}/conversations/{conversationId}/messages";
-            string? lastUserMessage = null;
             DateTime pollStartTime = DateTime.UtcNow;
 
             for (int attempt = 0; attempt < maxRetries; attempt++)
             {
                 _httpClient.DefaultRequestHeaders.Clear();
+                
+                // Set headers theo format API của bạn
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userKey}");
                 _httpClient.DefaultRequestHeaders.Add("x-user-key", userKey);
+
+                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId} with userKey {UserKey}", 
+                    attempt + 1, maxRetries, conversationId, userKey);
 
                 var response = await _httpClient.GetAsync(getMessagesUrl);
                 var messagesContent = await response.Content.ReadAsStringAsync();
 
-                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId}: Status={Status}",
-                    attempt + 1, maxRetries, conversationId, response.StatusCode);
+                _logger.LogInformation("Polling response: Status={Status}, Content={Content}",
+                    response.StatusCode, messagesContent);
 
                 if (response.IsSuccessStatusCode)
                 {
                     try
                     {
                         var messagesJson = JsonSerializer.Deserialize<JsonElement>(messagesContent);
-                        JsonElement messagesArray;
-
-                        if (messagesJson.ValueKind == JsonValueKind.Array)
+                        
+                        if (!messagesJson.TryGetProperty("messages", out var messagesArray))
                         {
-                            messagesArray = messagesJson;
-                        }
-                        else if (messagesJson.TryGetProperty("messages", out var msgsProp))
-                        {
-                            messagesArray = msgsProp;
-                        }
-                        else
-                        {
-                            _logger.LogWarning("No messages array found in response on attempt {Attempt}: {Content}", 
-                                attempt + 1, messagesContent);
+                            _logger.LogWarning("No 'messages' property found in response on attempt {Attempt}", attempt + 1);
                             continue;
                         }
 
@@ -239,7 +234,7 @@ public class BotpressService : IBotpressService
                             var messages = messagesArray.EnumerateArray().ToArray();
                             _logger.LogInformation("Found {Count} messages in conversation", messages.Length);
 
-                            // Look for bot messages created after we started polling
+                            // Tìm bot message mới nhất (không phải từ current user)
                             var botMessages = messages
                                 .Where(m => {
                                     if (m.TryGetProperty("userId", out var userIdProp) &&
@@ -251,11 +246,11 @@ public class BotpressService : IBotpressService
                                         // Check if it's NOT from current user
                                         bool isNotFromUser = !string.IsNullOrEmpty(messageUserId) && !messageUserId.Contains(currentUserId);
                                         
-                                        // Check if message was created after we started polling (recent message)
-                                        bool isRecentMessage = true; // Default to true for safety
+                                        // Check if message is recent (created after we started polling)
+                                        bool isRecentMessage = true;
                                         if (DateTime.TryParse(createdAtStr, out var createdAt))
                                         {
-                                            isRecentMessage = createdAt >= pollStartTime.AddSeconds(-10); // Allow 10 second buffer
+                                            isRecentMessage = createdAt >= pollStartTime.AddSeconds(-30); // 30 second buffer
                                         }
                                         
                                         return isNotFromUser && isRecentMessage;
@@ -274,30 +269,27 @@ public class BotpressService : IBotpressService
                             if (botMessages.Length > 0)
                             {
                                 var latestBotMessage = botMessages.FirstOrDefault();
-
-                                if (latestBotMessage.ValueKind != JsonValueKind.Undefined)
+                                if (latestBotMessage.ValueKind != JsonValueKind.Undefined &&
+                                    latestBotMessage.TryGetProperty("payload", out var payload) &&
+                                    payload.TryGetProperty("text", out var text))
                                 {
-                                    if (latestBotMessage.TryGetProperty("payload", out var payload) &&
-                                        payload.TryGetProperty("text", out var text))
+                                    var botResponseText = text.GetString();
+                                    if (!string.IsNullOrEmpty(botResponseText))
                                     {
-                                        var botResponseText = text.GetString();
-                                        if (!string.IsNullOrEmpty(botResponseText))
+                                        _logger.LogInformation("Found valid bot response on attempt {Attempt}: {Response}", 
+                                            attempt + 1, botResponseText);
+                                        
+                                        // Save bot message to database
+                                        try
                                         {
-                                            _logger.LogInformation("Found valid bot response on attempt {Attempt}: {Response}", 
-                                                attempt + 1, botResponseText);
-                                            
-                                            // Save bot message to database directly here
-                                            try
-                                            {
-                                                await SaveBotMessageToDatabase(currentUserId, botResponseText);
-                                            }
-                                            catch (Exception saveEx)
-                                            {
-                                                _logger.LogError(saveEx, "Failed to save bot message to database");
-                                            }
-                                            
-                                            return botResponseText;
+                                            await SaveBotMessageToDatabase(currentUserId, botResponseText);
                                         }
+                                        catch (Exception saveEx)
+                                        {
+                                            _logger.LogError(saveEx, "Failed to save bot message to database");
+                                        }
+                                        
+                                        return botResponseText;
                                     }
                                 }
                             }
@@ -316,7 +308,7 @@ public class BotpressService : IBotpressService
                         attempt + 1, response.StatusCode, messagesContent);
                 }
 
-                // Progressive delay: 2s, 4s, 6s, 8s, 10s, 12s
+                // Wait before retry: 2s, 4s, 6s, 8s, 10s, 12s
                 var delayMs = (attempt + 1) * 2000;
                 _logger.LogInformation("Waiting {DelayMs}ms before next attempt...", delayMs);
                 await Task.Delay(delayMs);
@@ -415,11 +407,12 @@ public class BotpressService : IBotpressService
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             _httpClient.DefaultRequestHeaders.Clear();
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userKey}");
             _httpClient.DefaultRequestHeaders.Add("x-user-key", userKey);
 
             _logger.LogInformation("Sending message with payload: {Payload}", json);
 
-            var sendResponse = await _httpClient.PostAsync('https://webchat.botpress.cloud/9dc9e0f4-9fad-4dc5-b5bc-aea77f87abc5/conversations/conv_01K85G5V9DK314697ZBZF4TKY2/messages', content);
+            var sendResponse = await _httpClient.PostAsync(sendMessageUrl, content);
             var sendResponseContent = await sendResponse.Content.ReadAsStringAsync();
 
             _logger.LogInformation("Send message response: Status={Status}, Content={Content}",
