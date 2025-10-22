@@ -64,16 +64,16 @@ builder.Services.AddCors(options =>
     });
 });
 
-// ✅ Add Swagger + JWT Auth config
+// ? Add Swagger + JWT Auth config
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new() { Title = "HUIT Library API", Version = "v1" });
 
-    // ⚡ Cấu hình nút Authorize để nhập JWT Token
+    // ? C?u hình nút Authorize d? nh?p JWT Token
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "Nhập token theo dạng: Bearer {token}",
+        Description = "Nh?p token theo d?ng: Bearer {token}",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.ApiKey,

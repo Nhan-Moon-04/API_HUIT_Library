@@ -20,12 +20,12 @@ namespace HUIT_Library.Services
             _logger = logger;
         }
 
-        // Ngu?i dùng (user) là ngu?i t?o chat tru?c - regular chat without bot
+        // Regular chat session creation (without bot)
         public async Task<PhienChat?> CreateSessionAsync(int userId)
         {
             try
             {
-                _logger.LogInformation("Attempting to create session for user ID: {UserId}", userId);
+                _logger.LogInformation("Attempting to create regular session for user ID: {UserId}", userId);
 
                 var user = await _context.NguoiDungs.FindAsync(userId);
                 if (user == null)
@@ -36,183 +36,286 @@ namespace HUIT_Library.Services
 
                 _logger.LogInformation("User found: {UserName} ({UserId})", user.HoTen, userId);
 
-                // Không gán MaNhanVien, vì dây là phòng chat chung
                 var session = new PhienChat
                 {
                     MaNguoiDung = userId,
-                    MaNhanVien = null,  // ? chua có nhân viên nào
-                    CoBot = false,
+                    MaNhanVien = null,
+                    CoBot = false, // Regular chat without bot
                     ThoiGianBatDau = DateTime.UtcNow
                 };
 
                 _context.PhienChats.Add(session);
                 await _context.SaveChangesAsync();
 
-                _logger.LogInformation("Successfully created session {SessionId} for user {UserId}", session.MaPhienChat, userId);
+                _logger.LogInformation("Successfully created regular session {SessionId} for user {UserId}", session.MaPhienChat, userId);
                 return session;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating session for user {UserId}", userId);
+                _logger.LogError(ex, "Error creating regular session for user {UserId}", userId);
                 return null;
             }
         }
 
-        // Create bot session when user wants to chat with bot
+        // Create bot session - this automatically enables the user to chat with bot
         public async Task<PhienChat?> CreateBotSessionAsync(int userId, CreateBotSessionRequest request)
         {
-            var user = await _context.NguoiDungs.FindAsync(userId);
-            if (user == null)
+            try
             {
-                _logger.LogWarning("Cannot create bot session: user with ID {UserId} not found.", userId);
+                _logger.LogInformation("Creating bot session for user {UserId} with initial message: {HasInitial}", 
+                    userId, !string.IsNullOrEmpty(request?.InitialMessage));
+
+                var user = await _context.NguoiDungs.FindAsync(userId);
+                if (user == null)
+                {
+                    _logger.LogWarning("Cannot create bot session: user with ID {UserId} not found.", userId);
+                    return null;
+                }
+
+                // Create bot session in database
+                var session = new PhienChat
+                {
+                    MaNguoiDung = userId,
+                    MaNhanVien = null,
+                    CoBot = true, // This session includes bot
+                    ThoiGianBatDau = DateTime.UtcNow
+                };
+
+                _context.PhienChats.Add(session);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Created bot session {SessionId} for user {UserId}", session.MaPhienChat, userId);
+
+                // Send initial message or welcome message
+                string initialMessage = request?.InitialMessage ?? "Xin chào! Tôi có thể giúp gì cho bạn?";
+                
+                if (!string.IsNullOrEmpty(request?.InitialMessage))
+                {
+                    // User provided initial message - send it to bot and get response
+                    _logger.LogInformation("Sending user's initial message to bot: {Message}", request.InitialMessage);
+                    
+                    // Save user's initial message
+                    var userMessage = new TinNhan
+                    {
+                        MaPhienChat = session.MaPhienChat,
+                        MaNguoiGui = userId,
+                        NoiDung = request.InitialMessage,
+                        ThoiGianGui = DateTime.UtcNow,
+                        LaBot = false
+                    };
+                    _context.TinNhans.Add(userMessage);
+                    await _context.SaveChangesAsync();
+
+                    // Get bot response and save it
+                    var botResponse = await _botpressService.SendMessageToBotAsync(request.InitialMessage, userId.ToString());
+                    await _botpressService.ProcessBotResponseAsync(botResponse, session.MaPhienChat);
+                }
+                else
+                {
+                    // Send default welcome message from bot
+                    _logger.LogInformation("Sending default welcome message from bot");
+                    await _botpressService.ProcessBotResponseAsync(initialMessage, session.MaPhienChat);
+                }
+
+                return session;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating bot session for user {UserId}", userId);
                 return null;
             }
-
-            var session = new PhienChat
-            {
-                MaNguoiDung = userId,
-                MaNhanVien = null,
-                CoBot = true, // This session includes bot
-                ThoiGianBatDau = DateTime.UtcNow
-            };
-
-            _context.PhienChats.Add(session);
-            await _context.SaveChangesAsync();
-
-            // Send initial message if provided
-            if (!string.IsNullOrEmpty(request?.InitialMessage))
-            {
-                await SendMessageToBotAsync(userId, new SendMessageRequest
-                {
-                    MaPhienChat = session.MaPhienChat,
-                    NoiDung = request.InitialMessage
-                });
-            }
-            else
-            {
-                // Send default welcome message from bot
-                var botResponse = await _botpressService.SendMessageToBotAsync("Xin chào! Tôi có thể giúp gì cho bạn?", userId.ToString());
-                await _botpressService.ProcessBotResponseAsync(botResponse, session.MaPhienChat);
-            }
-
-            return session;
         }
 
         // Send message to bot and get response
         public async Task<BotResponseDto?> SendMessageToBotAsync(int userId, SendMessageRequest request)
         {
-            var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
-            if (session == null || session.MaNguoiDung != userId || session.CoBot != true)
-                return null;
-
-            // Xác minh ngu?i g?i t?n t?i
-            var sender = await _context.NguoiDungs.FindAsync(userId);
-            if (sender == null) return null;
-
-            // Save user message
-            var userMessage = new TinNhan
+            try
             {
-                MaPhienChat = request.MaPhienChat,
-                MaNguoiGui = userId,
-                NoiDung = request.NoiDung,
-                ThoiGianGui = DateTime.UtcNow,
-                LaBot = false
-            };
+                _logger.LogInformation("User {UserId} sending message to bot in session {SessionId}: {Message}", 
+                    userId, request.MaPhienChat, request.NoiDung);
 
-            _context.TinNhans.Add(userMessage);
-            await _context.SaveChangesAsync();
-
-            // Send to bot and get response
-            var botResponseText = await _botpressService.SendMessageToBotAsync(request.NoiDung, userId.ToString());
-            var botMessage = await _botpressService.ProcessBotResponseAsync(botResponseText, request.MaPhienChat);
-
-            // Check if user is asking for staff assistance
-            var requiresStaff = CheckIfRequiresStaff(request.NoiDung) || CheckIfRequiresStaff(botResponseText);
-
-            return new BotResponseDto
-            {
-                UserMessage = new MessageDto
+                var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
+                if (session == null || session.MaNguoiDung != userId || session.CoBot != true)
                 {
-                    MaTinNhan = userMessage.MaTinNhan,
-                    MaPhienChat = userMessage.MaPhienChat,
-                    MaNguoiGui = userMessage.MaNguoiGui,
-                    NoiDung = userMessage.NoiDung,
-                    ThoiGianGui = userMessage.ThoiGianGui,
-                    LaBot = userMessage.LaBot
-                },
-                BotMessage = botMessage,
-                RequiresStaff = requiresStaff,
-                StaffRequestReason = requiresStaff ? "Bot đề xuất chuyển đến nhân viên" : null
-            };
+                    _logger.LogWarning("Invalid bot session {SessionId} for user {UserId}", request.MaPhienChat, userId);
+                    return null;
+                }
+
+                // Verify user exists
+                var sender = await _context.NguoiDungs.FindAsync(userId);
+                if (sender == null) 
+                {
+                    _logger.LogWarning("User {UserId} not found when sending message to bot", userId);
+                    return null;
+                }
+
+                // Save user message to database
+                var userMessage = new TinNhan
+                {
+                    MaPhienChat = request.MaPhienChat,
+                    MaNguoiGui = userId,
+                    NoiDung = request.NoiDung,
+                    ThoiGianGui = DateTime.UtcNow,
+                    LaBot = false
+                };
+
+                _context.TinNhans.Add(userMessage);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Saved user message {MessageId} to database", userMessage.MaTinNhan);
+
+                // Send to bot and get response
+                var botResponseText = await _botpressService.SendMessageToBotAsync(request.NoiDung, userId.ToString());
+                var botMessage = await _botpressService.ProcessBotResponseAsync(botResponseText, request.MaPhienChat);
+
+                // Check if user is asking for staff assistance
+                var requiresStaff = CheckIfRequiresStaff(request.NoiDung) || CheckIfRequiresStaff(botResponseText);
+
+                _logger.LogInformation("Bot conversation completed. RequiresStaff: {RequiresStaff}", requiresStaff);
+
+                return new BotResponseDto
+                {
+                    UserMessage = new MessageDto
+                    {
+                        MaTinNhan = userMessage.MaTinNhan,
+                        MaPhienChat = userMessage.MaPhienChat,
+                        MaNguoiGui = userMessage.MaNguoiGui,
+                        NoiDung = userMessage.NoiDung,
+                        ThoiGianGui = userMessage.ThoiGianGui,
+                        LaBot = userMessage.LaBot
+                    },
+                    BotMessage = botMessage,
+                    RequiresStaff = requiresStaff,
+                    StaffRequestReason = requiresStaff ? "Bot đề xuất chuyển đến nhân viên" : null
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in bot conversation for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
+                return null;
+            }
         }
 
         // Request staff assistance
         public async Task<bool> RequestStaffAsync(int userId, RequestStaffRequest request)
         {
-            var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
-            if (session == null || session.MaNguoiDung != userId)
-                return false;
-
-            // Update session to disable bot and prepare for staff
-            session.CoBot = false;
-            // MaNhanVien will be assigned when a staff member joins
-
-            // Add system message about staff request
-            var systemMessage = new TinNhan
+            try
             {
-                MaPhienChat = request.MaPhienChat,
-                MaNguoiGui = 0, // System message
-                NoiDung = $"Người dùng dã yêu cầu hỗ trợ tới nhân viên. Lý do: {request.LyDo ?? "Không có lý do cụ thể"}",
-                ThoiGianGui = DateTime.UtcNow,
-                LaBot = false
-            };
+                var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
+                if (session == null || session.MaNguoiDung != userId)
+                {
+                    _logger.LogWarning("Cannot request staff: invalid session {SessionId} for user {UserId}", request.MaPhienChat, userId);
+                    return false;
+                }
 
-            _context.TinNhans.Add(systemMessage);
-            await _context.SaveChangesAsync();
+                // Update session to disable bot and prepare for staff
+                session.CoBot = false;
+                // MaNhanVien will be assigned when a staff member joins
 
-            return true;
+                // Add system message about staff request
+                var systemMessage = new TinNhan
+                {
+                    MaPhienChat = request.MaPhienChat,
+                    MaNguoiGui = 0, // System message
+                    NoiDung = $"Người dùng đã yêu cầu hỗ trợ từ nhân viên. Lý do: {request.LyDo ?? "Không có lý do cụ thể"}",
+                    ThoiGianGui = DateTime.UtcNow,
+                    LaBot = false
+                };
+
+                _context.TinNhans.Add(systemMessage);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("User {UserId} requested staff assistance for session {SessionId}", userId, request.MaPhienChat);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error requesting staff for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
+                return false;
+            }
         }
 
-        // G?i tin nh?n trong chat (regular chat)
+        // Send message in regular chat (non-bot)
         public async Task<TinNhan?> SendMessageAsync(int userId, SendMessageRequest request)
         {
-            var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
-            if (session == null) return null;
-
-            // Xác minh ngu?i g?i t?n t?i
-            var sender = await _context.NguoiDungs.FindAsync(userId);
-            if (sender == null) return null;
-
-            var message = new TinNhan
+            try
             {
-                MaPhienChat = request.MaPhienChat,
-                MaNguoiGui = userId,
-                NoiDung = request.NoiDung,
-                ThoiGianGui = DateTime.UtcNow,
-                LaBot = false
-            };
+                var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
+                if (session == null) 
+                {
+                    _logger.LogWarning("Session {SessionId} not found for user {UserId}", request.MaPhienChat, userId);
+                    return null;
+                }
 
-            _context.TinNhans.Add(message);
-            await _context.SaveChangesAsync();
+                // Verify sender exists
+                var sender = await _context.NguoiDungs.FindAsync(userId);
+                if (sender == null) 
+                {
+                    _logger.LogWarning("User {UserId} not found when sending message", userId);
+                    return null;
+                }
 
-            return message;
+                var message = new TinNhan
+                {
+                    MaPhienChat = request.MaPhienChat,
+                    MaNguoiGui = userId,
+                    NoiDung = request.NoiDung,
+                    ThoiGianGui = DateTime.UtcNow,
+                    LaBot = false
+                };
+
+                _context.TinNhans.Add(message);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Saved regular message {MessageId} from user {UserId}", message.MaTinNhan, userId);
+
+                // If this session has a bot enabled, forward the message to the bot
+                if (session.CoBot == true)
+                {
+                    try
+                    {
+                        var botResponseText = await _botpressService.SendMessageToBotAsync(request.NoiDung, userId.ToString());
+                        await _botpressService.ProcessBotResponseAsync(botResponseText, request.MaPhienChat);
+                        _logger.LogInformation("Forwarded message to bot for session {SessionId}", request.MaPhienChat);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error forwarding message to bot for session {SessionId}", request.MaPhienChat);
+                    }
+                }
+
+                return message;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error sending regular message for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
+                return null;
+            }
         }
 
         public async Task<IEnumerable<MessageDto>> GetMessagesAsync(int maPhienChat)
         {
-            return await _context.TinNhans
-                .Where(t => t.MaPhienChat == maPhienChat)
-                .OrderBy(t => t.ThoiGianGui)
-                .Select(t => new MessageDto
-                {
-                    MaTinNhan = t.MaTinNhan,
-                    MaPhienChat = t.MaPhienChat,
-                    MaNguoiGui = t.MaNguoiGui,
-                    NoiDung = t.NoiDung,
-                    ThoiGianGui = t.ThoiGianGui,
-                    LaBot = t.LaBot
-                })
-                .ToListAsync();
+            try
+            {
+                return await _context.TinNhans
+                    .Where(t => t.MaPhienChat == maPhienChat)
+                    .OrderBy(t => t.ThoiGianGui)
+                    .Select(t => new MessageDto
+                    {
+                        MaTinNhan = t.MaTinNhan,
+                        MaPhienChat = t.MaPhienChat,
+                        MaNguoiGui = t.MaNguoiGui,
+                        NoiDung = t.NoiDung,
+                        ThoiGianGui = t.ThoiGianGui,
+                        LaBot = t.LaBot
+                    })
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting messages for session {SessionId}", maPhienChat);
+                return new List<MessageDto>();
+            }
         }
 
         public async Task<object?> GetSessionInfoAsync(int maPhienChat, int userId)
@@ -221,7 +324,10 @@ namespace HUIT_Library.Services
             {
                 var session = await _context.PhienChats.FindAsync(maPhienChat);
                 if (session == null || session.MaNguoiDung != userId)
+                {
+                    _logger.LogWarning("Session {SessionId} not found or access denied for user {UserId}", maPhienChat, userId);
                     return null;
+                }
 
                 var messageCount = await _context.TinNhans.CountAsync(t => t.MaPhienChat == maPhienChat);
 
@@ -250,9 +356,9 @@ namespace HUIT_Library.Services
             if (string.IsNullOrEmpty(message)) return false;
 
             var staffKeywords = new[] {
-                "nhân viên", "nhan vien", "staff", "h? tr?", "ho tro",
-                "giúp d?", "giup do", "không hi?u", "khong hieu",
-                "ph?c t?p", "phuc tap", "g?p tr?c ti?p", "gap truc tiep"
+                "nhân viên", "nhan vien", "staff", "hỗ trợ", "ho tro",
+                "giúp đỡ", "giup do", "không hiểu", "khong hieu",
+                "phức tạp", "phuc tap", "gặp trực tiếp", "gap truc tiep"
             };
 
             return staffKeywords.Any(keyword => message.ToLower().Contains(keyword.ToLower()));
