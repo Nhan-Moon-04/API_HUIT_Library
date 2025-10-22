@@ -66,7 +66,7 @@ public class ChatController : ControllerBase
         {
             var sessionInfo = await _chatService.GetSessionInfoAsync(maPhienChat, userId);
             if (sessionInfo == null)
-                return BadRequest(new { message = "Phiên chat không t?n t?i ho?c b?n không có quy?n truy c?p" });
+                return BadRequest(new { message = "Phiên chat không tồn tại hoặc bạn không có quyền truy cập" });
 
             return Ok(sessionInfo);
         }
@@ -96,7 +96,7 @@ public class ChatController : ControllerBase
             if (session == null)
             {
                 _logger.LogWarning("Failed to create session for user ID: {UserId}", userId);
-                return BadRequest(new { message = "Không th? t?o phiên chat" });
+                return BadRequest(new { message = "Không thể tạo phiên chat" });
             }
 
             _logger.LogInformation("Successfully created chat session {SessionId} for user {UserId}", session.MaPhienChat, userId);
@@ -104,13 +104,13 @@ public class ChatController : ControllerBase
             {
                 maPhienChat = session.MaPhienChat,
                 coBot = session.CoBot,
-                message = "Phiên chat thu?ng dã du?c t?o thành công"
+                message = "Phiên chat thường đã được tạo thành công"
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating chat session for user {UserId}", userId);
-            return StatusCode(500, new { message = "L?i h? th?ng khi t?o phiên chat" });
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tạo phiên chat" });
         }
     }
 
@@ -202,36 +202,6 @@ public class ChatController : ControllerBase
     }
 
     [Authorize]
-    [HttpPost("bot/test")]
-    public async Task<IActionResult> TestBotConnection()
-    {
-        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (!int.TryParse(userIdClaim, out var userId))
-            return Unauthorized();
-
-        try
-        {
-            _logger.LogInformation("Testing bot connection for user {UserId}", userId);
-
-            var testMessage = "Xin chào! Đây là tin nhắn test.";
-            var botResponse = await _chatService.TestBotDirectly(testMessage, userId.ToString());
-
-            return Ok(new
-            {
-                success = true,
-                testMessage = testMessage,
-                botResponse = botResponse,
-                message = "Bot connection test completed. Check logs for details."
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error testing bot connection for user {UserId}", userId);
-            return StatusCode(500, new { message = "Lỗi khi test kết nối bot", error = ex.Message });
-        }
-    }
-
-    [Authorize]
     [HttpPost("staff/request")]
     public async Task<IActionResult> RequestStaff([FromBody] RequestStaffRequest request)
     {
@@ -258,13 +228,6 @@ public class ChatController : ControllerBase
         return Ok(messages);
     }
 
-    [HttpGet("test-bot")]
-    public async Task<IActionResult> TestBot()
-    {
-        var botResponse = await _chatService.TestBotDirectly("Xin chào, bạn là ai?", "user123");
-        return Ok(botResponse);
-    }
-
     /// <summary>
     /// Webhook endpoint để nhận tin nhắn từ Botpress
     /// URL này sẽ được cấu hình trong Botpress webhook settings
@@ -289,77 +252,149 @@ public class ChatController : ControllerBase
     }
 
     /// <summary>
-    /// Test endpoint để kiểm tra webhook (có thể xóa sau khi test xong)
+    /// Load all chat sessions for current user (for when user logs in)
     /// </summary>
-    [HttpPost("webhook/test")]
-    public async Task<IActionResult> TestWebhook([FromBody] JsonElement testData)
+    [Authorize]
+    [HttpGet("user/sessions")]
+    public async Task<IActionResult> GetUserChatSessions()
     {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
         try
         {
-            _logger.LogInformation("Test webhook received: {TestData}", testData.GetRawText());
+            var sessions = await _chatService.GetUserChatSessionsAsync(userId);
             
-            // Test với dữ liệu mẫu
-            var sampleWebhookData = JsonSerializer.Deserialize<JsonElement>("""
-                {
-                    "user": {
-                        "id": "123"
-                    },
-                    "payload": {
-                        "text": "Đây là tin nhắn test từ webhook"
-                    }
-                }
-                """);
-
-            await _botpressService.HandleWebhookAsync(sampleWebhookData);
-
-            return Ok(new { 
-                status = "success", 
-                message = "Test webhook processed successfully",
-                receivedData = testData.GetRawText()
+            return Ok(new {
+                success = true,
+                userId = userId,
+                sessions = sessions,
+                totalSessions = sessions.Count(),
+                message = "Chat sessions loaded successfully"
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing test webhook");
-            return StatusCode(500, new { status = "error", message = "Failed to process test webhook" });
+            _logger.LogError(ex, "Error loading chat sessions for user {UserId}", userId);
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tải phiên chat" });
         }
     }
 
     /// <summary>
-    /// Debug endpoint để kiểm tra bot response có được lưu vào database không
+    /// Get or create bot session for current user
     /// </summary>
-    [HttpPost("debug/bot-message")]
-    public async Task<IActionResult> DebugBotMessage([FromBody] DebugBotMessageRequest request)
+    [Authorize]
+    [HttpGet("user/bot-session")]
+    public async Task<IActionResult> GetOrCreateBotSession()
     {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
         try
         {
-            _logger.LogInformation("Debug: Testing bot message save for user {UserId}", request.UserId);
+            var botSession = await _chatService.GetOrCreateBotSessionAsync(userId);
             
-            // Test direct bot communication
-            var botResponse = await _botpressService.SendMessageToBotAsync(request.Message, request.UserId);
-            
-            // Check if message was saved
-            var savedMessages = await _chatService.GetMessagesAsync(request.SessionId ?? 0);
-            var botMessages = savedMessages.Where(m => m.LaBot == true).OrderByDescending(m => m.ThoiGianGui).Take(3);
-            
-            return Ok(new { 
+            if (botSession == null)
+            {
+                return BadRequest(new { message = "Không thể tạo hoặc lấy phiên chat bot" });
+            }
+
+            return Ok(new {
                 success = true,
-                botResponse = botResponse,
-                recentBotMessages = botMessages,
-                message = "Bot message test completed. Check recentBotMessages to see if bot response was saved."
+                botSession = botSession,
+                message = "Bot session ready"
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in debug bot message test");
-            return StatusCode(500, new { success = false, error = ex.Message });
+            _logger.LogError(ex, "Error getting/creating bot session for user {UserId}", userId);
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tạo phiên chat bot" });
         }
     }
-}
 
-public class DebugBotMessageRequest
-{
-    public string UserId { get; set; } = "";
-    public string Message { get; set; } = "";
-    public int? SessionId { get; set; }
+    /// <summary>
+    /// Get recent messages for a session with pagination
+    /// </summary>
+    [Authorize]
+    [HttpGet("session/{maPhienChat}/messages")]
+    public async Task<IActionResult> GetRecentMessages(int maPhienChat, [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        try
+        {
+            var messagesPage = await _chatService.GetRecentMessagesAsync(maPhienChat, userId, page, pageSize);
+            
+            return Ok(new {
+                success = true,
+                data = messagesPage,
+                message = $"Loaded {messagesPage.Messages.Count()} messages for session {maPhienChat}"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading messages for session {SessionId}, user {UserId}", maPhienChat, userId);
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tải tin nhắn" });
+        }
+    }
+
+    /// <summary>
+    /// Dashboard endpoint: Load user data when they first login
+    /// </summary>
+    [Authorize]
+    [HttpGet("user/dashboard")]
+    public async Task<IActionResult> GetUserDashboard()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+        
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        try
+        {
+            _logger.LogInformation("Loading dashboard data for user {UserId} ({UserName})", userId, userNameClaim);
+
+            // Load all user's chat sessions
+            var allSessions = await _chatService.GetUserChatSessionsAsync(userId);
+            
+            // Get active bot session (if any)
+            var activeBotSession = await _chatService.GetActiveBotSessionAsync(userId);
+            
+            // Split sessions by type
+            var botSessions = allSessions.Where(s => s.CoBot == true).ToList();
+            var regularSessions = allSessions.Where(s => s.CoBot != true).ToList();
+
+            return Ok(new {
+                success = true,
+                user = new {
+                    userId = userId,
+                    userName = userNameClaim
+                },
+                dashboard = new {
+                    totalSessions = allSessions.Count(),
+                    botSessions = new {
+                        total = botSessions.Count,
+                        active = activeBotSession,
+                        recent = botSessions.Take(5)
+                    },
+                    regularSessions = new {
+                        total = regularSessions.Count,
+                        recent = regularSessions.Take(5)
+                    },
+                    allSessions = allSessions.Take(10) // Recent 10 sessions
+                },
+                message = "Dashboard data loaded successfully"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading dashboard for user {UserId}", userId);
+            return StatusCode(500, new { message = "Lỗi hệ thống khi tải dashboard" });
+        }
+    }
 }

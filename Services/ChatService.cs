@@ -20,6 +20,13 @@ namespace HUIT_Library.Services
             _logger = logger;
         }
 
+        // Helper method to get Vietnam timezone
+        private DateTime GetVietnamTime()
+        {
+            var vietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, vietnamTimeZone);
+        }
+
         // Regular chat session creation (without bot)
         public async Task<PhienChat?> CreateSessionAsync(int userId)
         {
@@ -41,7 +48,7 @@ namespace HUIT_Library.Services
                     MaNguoiDung = userId,
                     MaNhanVien = null,
                     CoBot = false, // Regular chat without bot
-                    ThoiGianBatDau = DateTime.UtcNow
+                    ThoiGianBatDau = GetVietnamTime()
                 };
 
                 _context.PhienChats.Add(session);
@@ -78,7 +85,7 @@ namespace HUIT_Library.Services
                     MaNguoiDung = userId,
                     MaNhanVien = null,
                     CoBot = true, // This session includes bot
-                    ThoiGianBatDau = DateTime.UtcNow
+                    ThoiGianBatDau = GetVietnamTime()
                 };
 
                 _context.PhienChats.Add(session);
@@ -100,7 +107,7 @@ namespace HUIT_Library.Services
                         MaPhienChat = session.MaPhienChat,
                         MaNguoiGui = userId,
                         NoiDung = request.InitialMessage,
-                        ThoiGianGui = DateTime.UtcNow,
+                        ThoiGianGui = GetVietnamTime(),
                         LaBot = false
                     };
                     _context.TinNhans.Add(userMessage);
@@ -155,7 +162,7 @@ namespace HUIT_Library.Services
                     MaPhienChat = request.MaPhienChat,
                     MaNguoiGui = userId,
                     NoiDung = request.NoiDung,
-                    ThoiGianGui = DateTime.UtcNow,
+                    ThoiGianGui = GetVietnamTime(),
                     LaBot = false
                 };
 
@@ -218,7 +225,7 @@ namespace HUIT_Library.Services
                     MaPhienChat = request.MaPhienChat,
                     MaNguoiGui = 0, // System message
                     NoiDung = $"Người dùng đã yêu cầu hỗ trợ từ nhân viên. Lý do: {request.LyDo ?? "Không có lý do cụ thể"}",
-                    ThoiGianGui = DateTime.UtcNow,
+                    ThoiGianGui = GetVietnamTime(),
                     LaBot = false
                 };
 
@@ -260,7 +267,7 @@ namespace HUIT_Library.Services
                     MaPhienChat = request.MaPhienChat,
                     MaNguoiGui = userId,
                     NoiDung = request.NoiDung,
-                    ThoiGianGui = DateTime.UtcNow,
+                    ThoiGianGui = GetVietnamTime(),
                     LaBot = false
                 };
 
@@ -364,23 +371,191 @@ namespace HUIT_Library.Services
             return staffKeywords.Any(keyword => message.ToLower().Contains(keyword.ToLower()));
         }
 
-        // Test method for diagnosing bot issues
-        public async Task<string> TestBotDirectly(string message, string userId)
+        // Load user's chat sessions when user logs in
+        public async Task<IEnumerable<ChatSessionDto>> GetUserChatSessionsAsync(int userId)
         {
-            _logger.LogInformation("=== DIRECT BOT TEST ===");
-            _logger.LogInformation("Test message: {Message}", message);
-            _logger.LogInformation("User ID: {UserId}", userId);
-
             try
             {
-                var response = await _botpressService.SendMessageToBotAsync(message, userId);
-                _logger.LogInformation("Bot response received: {Response}", response);
-                return response;
+                _logger.LogInformation("Loading chat sessions for user {UserId}", userId);
+
+                var sessions = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId)
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .Select(p => new ChatSessionDto
+                    {
+                        MaPhienChat = p.MaPhienChat,
+                        MaNguoiDung = p.MaNguoiDung,
+                        MaNhanVien = p.MaNhanVien,
+                        CoBot = p.CoBot,
+                        ThoiGianBatDau = p.ThoiGianBatDau ?? GetVietnamTime(),
+                        ThoiGianKetThuc = p.ThoiGianKetThuc,
+                        SoLuongTinNhan = _context.TinNhans.Count(t => t.MaPhienChat == p.MaPhienChat),
+                        TinNhanCuoi = _context.TinNhans
+                            .Where(t => t.MaPhienChat == p.MaPhienChat)
+                            .OrderByDescending(t => t.ThoiGianGui)
+                            .Select(t => t.NoiDung)
+                            .FirstOrDefault(),
+                        ThoiGianTinNhanCuoi = _context.TinNhans
+                            .Where(t => t.MaPhienChat == p.MaPhienChat)
+                            .OrderByDescending(t => t.ThoiGianGui)
+                            .Select(t => t.ThoiGianGui)
+                            .FirstOrDefault()
+                    })
+                    .ToListAsync();
+
+                _logger.LogInformation("Found {Count} chat sessions for user {UserId}", sessions.Count, userId);
+                return sessions;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in direct bot test");
-                return $"Lỗi trong test: {ex.Message}";
+                _logger.LogError(ex, "Error loading chat sessions for user {UserId}", userId);
+                return new List<ChatSessionDto>();
+            }
+        }
+
+        // Get active bot session for user (if exists)
+        public async Task<ChatSessionDto?> GetActiveBotSessionAsync(int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Looking for active bot session for user {UserId}", userId);
+
+                var session = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId && p.CoBot == true && p.ThoiGianKetThuc == null)
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .FirstOrDefaultAsync();
+
+                if (session == null)
+                {
+                    _logger.LogInformation("No active bot session found for user {UserId}", userId);
+                    return null;
+                }
+
+                var sessionDto = new ChatSessionDto
+                {
+                    MaPhienChat = session.MaPhienChat,
+                    MaNguoiDung = session.MaNguoiDung,
+                    MaNhanVien = session.MaNhanVien,
+                    CoBot = session.CoBot,
+                    ThoiGianBatDau = session.ThoiGianBatDau ?? GetVietnamTime(),
+                    ThoiGianKetThuc = session.ThoiGianKetThuc,
+                    SoLuongTinNhan = await _context.TinNhans.CountAsync(t => t.MaPhienChat == session.MaPhienChat),
+                    TinNhanCuoi = await _context.TinNhans
+                        .Where(t => t.MaPhienChat == session.MaPhienChat)
+                        .OrderByDescending(t => t.ThoiGianGui)
+                        .Select(t => t.NoiDung)
+                        .FirstOrDefaultAsync(),
+                    ThoiGianTinNhanCuoi = await _context.TinNhans
+                        .Where(t => t.MaPhienChat == session.MaPhienChat)
+                        .OrderByDescending(t => t.ThoiGianGui)
+                        .Select(t => t.ThoiGianGui)
+                        .FirstOrDefaultAsync()
+                };
+
+                _logger.LogInformation("Found active bot session {SessionId} for user {UserId}", session.MaPhienChat, userId);
+                return sessionDto;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting active bot session for user {UserId}", userId);
+                return null;
+            }
+        }
+
+        // Get or create bot session for user
+        public async Task<ChatSessionDto?> GetOrCreateBotSessionAsync(int userId)
+        {
+            try
+            {
+                // First check if user has an active bot session
+                var activeSession = await GetActiveBotSessionAsync(userId);
+                if (activeSession != null)
+                {
+                    _logger.LogInformation("Returning existing bot session {SessionId} for user {UserId}", activeSession.MaPhienChat, userId);
+                    return activeSession;
+                }
+
+                // Create new bot session if none exists
+                _logger.LogInformation("Creating new bot session for user {UserId}", userId);
+                var newSession = await CreateBotSessionAsync(userId, new CreateBotSessionRequest());
+                
+                if (newSession == null)
+                {
+                    _logger.LogWarning("Failed to create bot session for user {UserId}", userId);
+                    return null;
+                }
+
+                // Return the new session as DTO
+                return new ChatSessionDto
+                {
+                    MaPhienChat = newSession.MaPhienChat,
+                    MaNguoiDung = newSession.MaNguoiDung,
+                    MaNhanVien = newSession.MaNhanVien,
+                    CoBot = newSession.CoBot,
+                    ThoiGianBatDau = newSession.ThoiGianBatDau ?? GetVietnamTime(),
+                    ThoiGianKetThuc = newSession.ThoiGianKetThuc,
+                    SoLuongTinNhan = 1, // Welcome message
+                    TinNhanCuoi = "Xin chào! Tôi có thể giúp gì cho bạn?",
+                    ThoiGianTinNhanCuoi = newSession.ThoiGianBatDau
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting or creating bot session for user {UserId}", userId);
+                return null;
+            }
+        }
+
+        // Get recent messages for a session with pagination
+        public async Task<ChatMessagesPageDto> GetRecentMessagesAsync(int maPhienChat, int userId, int page = 1, int pageSize = 50)
+        {
+            try
+            {
+                // Verify user has access to this session
+                var session = await _context.PhienChats.FindAsync(maPhienChat);
+                if (session == null || session.MaNguoiDung != userId)
+                {
+                    _logger.LogWarning("User {UserId} attempted to access unauthorized session {SessionId}", userId, maPhienChat);
+                    return new ChatMessagesPageDto { Messages = new List<MessageDto>(), TotalCount = 0 };
+                }
+
+                var skip = (page - 1) * pageSize;
+                var totalCount = await _context.TinNhans.CountAsync(t => t.MaPhienChat == maPhienChat);
+
+                var messages = await _context.TinNhans
+                    .Where(t => t.MaPhienChat == maPhienChat)
+                    .OrderByDescending(t => t.ThoiGianGui) // Get newest first
+                    .Skip(skip)
+                    .Take(pageSize)
+                    .Select(t => new MessageDto
+                    {
+                        MaTinNhan = t.MaTinNhan,
+                        MaPhienChat = t.MaPhienChat,
+                        MaNguoiGui = t.MaNguoiGui,
+                        NoiDung = t.NoiDung,
+                        ThoiGianGui = t.ThoiGianGui,
+                        LaBot = t.LaBot
+                    })
+                    .ToListAsync();
+
+                // Reverse to show chronological order (oldest to newest)
+                messages.Reverse();
+
+                _logger.LogInformation("Loaded {Count} messages for session {SessionId}, page {Page}", messages.Count, maPhienChat, page);
+
+                return new ChatMessagesPageDto
+                {
+                    Messages = messages,
+                    TotalCount = totalCount,
+                    Page = page,
+                    PageSize = pageSize,
+                    HasMore = skip + pageSize < totalCount
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting recent messages for session {SessionId}, user {UserId}", maPhienChat, userId);
+                return new ChatMessagesPageDto { Messages = new List<MessageDto>(), TotalCount = 0 };
             }
         }
     }

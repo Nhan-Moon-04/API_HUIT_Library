@@ -19,6 +19,9 @@ public interface IChatService
     // Session info
     Task<object?> GetSessionInfoAsync(int maPhienChat, int userId);
 
-    // Debug method
-    Task<string> TestBotDirectly(string message, string userId);
+    // User session management - NEW METHODS FOR LOGIN
+    Task<IEnumerable<ChatSessionDto>> GetUserChatSessionsAsync(int userId);
+    Task<ChatSessionDto?> GetActiveBotSessionAsync(int userId);
+    Task<ChatSessionDto?> GetOrCreateBotSessionAsync(int userId);
+    Task<ChatMessagesPageDto> GetRecentMessagesAsync(int maPhienChat, int userId, int page = 1, int pageSize = 50);
 }
