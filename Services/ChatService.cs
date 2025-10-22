@@ -558,5 +558,93 @@ namespace HUIT_Library.Services
                 return new ChatMessagesPageDto { Messages = new List<MessageDto>(), TotalCount = 0 };
             }
         }
+
+        public async Task<int> GetLastest_PhienChatUser(int userId)
+        {
+            try
+            {
+                var session = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId)
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .FirstOrDefaultAsync();
+                if (session == null)
+                {
+                    _logger.LogInformation("No chat sessions found for user {UserId}", userId);
+                    return 0; // No sessions found
+                }
+                _logger.LogInformation("Latest chat session for user {UserId} is {SessionId}", userId, session.MaPhienChat);
+                return session.MaPhienChat;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving latest chat session for user {UserId}", userId);
+                return 0;
+            }
+        }
+
+        // Get latest chat session with full message history
+        public async Task<ChatSessionWithMessagesDto?> GetLatestChatSessionWithMessagesAsync(int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Getting latest chat session with messages for user {UserId}", userId);
+
+                // Get latest session
+                var latestSession = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId)
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .FirstOrDefaultAsync();
+
+                if (latestSession == null)
+                {
+                    _logger.LogInformation("No chat sessions found for user {UserId}", userId);
+                    return null;
+                }
+
+                // Get all messages for this session
+                var messages = await _context.TinNhans
+                    .Where(t => t.MaPhienChat == latestSession.MaPhienChat)
+                    .OrderBy(t => t.ThoiGianGui)
+                    .Select(t => new MessageDto
+                    {
+                        MaTinNhan = t.MaTinNhan,
+                        MaPhienChat = t.MaPhienChat,
+                        MaNguoiGui = t.MaNguoiGui,
+                        NoiDung = t.NoiDung,
+                        ThoiGianGui = t.ThoiGianGui,
+                        LaBot = t.LaBot
+                    })
+                    .ToListAsync();
+
+                // Create session DTO with messages
+                var result = new ChatSessionWithMessagesDto
+                {
+                    SessionInfo = new ChatSessionDto
+                    {
+                        MaPhienChat = latestSession.MaPhienChat,
+                        MaNguoiDung = latestSession.MaNguoiDung,
+                        MaNhanVien = latestSession.MaNhanVien,
+                        CoBot = latestSession.CoBot,
+                        ThoiGianBatDau = latestSession.ThoiGianBatDau ?? GetVietnamTime(),
+                        ThoiGianKetThuc = latestSession.ThoiGianKetThuc,
+                        SoLuongTinNhan = messages.Count,
+                        TinNhanCuoi = messages.LastOrDefault()?.NoiDung,
+                        ThoiGianTinNhanCuoi = messages.LastOrDefault()?.ThoiGianGui
+                    },
+                    Messages = messages,
+                    TotalMessages = messages.Count
+                };
+
+                _logger.LogInformation("Found latest session {SessionId} with {MessageCount} messages for user {UserId}", 
+                    latestSession.MaPhienChat, messages.Count, userId);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting latest chat session with messages for user {UserId}", userId);
+                return null;
+            }
+        }
     }
 }

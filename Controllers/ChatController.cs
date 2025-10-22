@@ -252,6 +252,58 @@ public class ChatController : ControllerBase
     }
 
     /// <summary>
+    /// Get latest chat session with complete message history for current user
+    /// Tự động lấy phiên chat mới nhất của user và hiển thị toàn bộ lịch sử chat
+    /// </summary>
+    [Authorize]
+    [HttpGet("user/latest-with-messages")]
+    public async Task<IActionResult> GetLatestChatSessionWithMessages()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+        
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            _logger.LogWarning("Invalid user ID claim when getting latest chat session: {UserIdClaim}", userIdClaim);
+            return Unauthorized(new { message = "Token không hợp lệ" });
+        }
+
+        try
+        {
+            _logger.LogInformation("Getting latest chat session with messages for user {UserId} ({UserName})", userId, userNameClaim);
+
+            var latestSessionWithMessages = await _chatService.GetLatestChatSessionWithMessagesAsync(userId);
+
+            if (latestSessionWithMessages is null)
+            {
+                return Ok(new
+                {
+                    success = true,
+                    data = (object?)null,
+                    message = "Người dùng chưa có phiên chat nào"
+                });
+            }
+
+            return Ok(new
+            {
+                success = true,
+                data = latestSessionWithMessages,
+                message = $"Đã tải thành công phiên chat mới nhất (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với {latestSessionWithMessages.TotalMessages} tin nhắn"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting latest chat session with messages for user {UserId}", userId);
+            return StatusCode(500, new
+            {
+                success = false,
+                message = "Lỗi hệ thống khi tải phiên chat mới nhất",
+                error = ex.Message
+            });
+        }
+    }
+
+    /// <summary>
     /// Load all chat sessions for current user (for when user logs in)
     /// </summary>
     [Authorize]

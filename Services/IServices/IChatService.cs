@@ -24,4 +24,7 @@ public interface IChatService
     Task<ChatSessionDto?> GetActiveBotSessionAsync(int userId);
     Task<ChatSessionDto?> GetOrCreateBotSessionAsync(int userId);
     Task<ChatMessagesPageDto> GetRecentMessagesAsync(int maPhienChat, int userId, int page = 1, int pageSize = 50);
+
+    // Latest session with messages
+    Task<ChatSessionWithMessagesDto?> GetLatestChatSessionWithMessagesAsync(int userId);
 }
