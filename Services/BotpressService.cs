@@ -208,14 +208,14 @@ public class BotpressService : IBotpressService
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userKey}");
                 _httpClient.DefaultRequestHeaders.Add("x-user-key", userKey);
 
-                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId} with userKey {UserKey}", 
-                    attempt + 1, maxRetries, conversationId, userKey);
+                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId}", 
+                    attempt + 1, maxRetries, conversationId);
 
                 var response = await _httpClient.GetAsync(getMessagesUrl);
                 var messagesContent = await response.Content.ReadAsStringAsync();
 
-                _logger.LogInformation("Polling response: Status={Status}, Content={Content}",
-                    response.StatusCode, messagesContent);
+                _logger.LogInformation("Polling response: Status={Status}, Content length={Length}",
+                    response.StatusCode, messagesContent?.Length ?? 0);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -232,64 +232,65 @@ public class BotpressService : IBotpressService
                         if (messagesArray.ValueKind == JsonValueKind.Array)
                         {
                             var messages = messagesArray.EnumerateArray().ToArray();
-                            _logger.LogInformation("Found {Count} messages in conversation", messages.Length);
+                            _logger.LogInformation("Found {Count} total messages in conversation", messages.Length);
 
-                            // Tìm bot message mới nhất (không phải từ current user)
-                            var botMessages = messages
-                                .Where(m => {
-                                    if (m.TryGetProperty("userId", out var userIdProp) &&
-                                        m.TryGetProperty("createdAt", out var createdAtProp))
-                                    {
-                                        var messageUserId = userIdProp.GetString();
-                                        var createdAtStr = createdAtProp.GetString();
-                                        
-                                        // Check if it's NOT from current user
-                                        bool isNotFromUser = !string.IsNullOrEmpty(messageUserId) && !messageUserId.Contains(currentUserId);
-                                        
-                                        // Check if message is recent (created after we started polling)
-                                        bool isRecentMessage = true;
-                                        if (DateTime.TryParse(createdAtStr, out var createdAt))
-                                        {
-                                            isRecentMessage = createdAt >= pollStartTime.AddSeconds(-30); // 30 second buffer
-                                        }
-                                        
-                                        return isNotFromUser && isRecentMessage;
-                                    }
-                                    return false;
-                                })
+                            if (messages.Length == 0)
+                            {
+                                _logger.LogInformation("No messages in conversation yet, retrying...");
+                                continue;
+                            }
+
+                            // Get the latest message (should be bot response if we just sent a user message)
+                            var latestMessage = messages
                                 .OrderByDescending(m => {
                                     if (m.TryGetProperty("createdAt", out var createdAt))
                                         return createdAt.GetString();
                                     return "";
                                 })
-                                .ToArray();
+                                .FirstOrDefault();
 
-                            _logger.LogInformation("Found {Count} recent bot messages", botMessages.Length);
-
-                            if (botMessages.Length > 0)
+                            if (latestMessage.ValueKind != JsonValueKind.Undefined)
                             {
-                                var latestBotMessage = botMessages.FirstOrDefault();
-                                if (latestBotMessage.ValueKind != JsonValueKind.Undefined &&
-                                    latestBotMessage.TryGetProperty("payload", out var payload) &&
+                                // Check if it's a recent message (created after we started polling)
+                                bool isRecentMessage = true;
+                                if (latestMessage.TryGetProperty("createdAt", out var createdAtProp))
+                                {
+                                    var createdAtStr = createdAtProp.GetString();
+                                    if (DateTime.TryParse(createdAtStr, out var createdAt))
+                                    {
+                                        isRecentMessage = createdAt >= pollStartTime.AddSeconds(-30); // 30 second buffer
+                                    }
+                                }
+
+                                if (isRecentMessage && 
+                                    latestMessage.TryGetProperty("payload", out var payload) &&
                                     payload.TryGetProperty("text", out var text))
                                 {
-                                    var botResponseText = text.GetString();
-                                    if (!string.IsNullOrEmpty(botResponseText))
+                                    var messageText = text.GetString();
+                                    var messageUserId = latestMessage.TryGetProperty("userId", out var userIdProp) ? userIdProp.GetString() : "";
+                                    
+                                    _logger.LogInformation("Latest message from {UserId}: {Text}", messageUserId, messageText);
+                                    
+                                    if (!string.IsNullOrEmpty(messageText))
                                     {
-                                        _logger.LogInformation("Found valid bot response on attempt {Attempt}: {Response}", 
-                                            attempt + 1, botResponseText);
-                                        
-                                        // Save bot message to database
-                                        try
+                                        // Simple check: if message contains bot-like responses, it's probably from bot
+                                        if (IsBotMessage(messageText) || attempt >= 2) // After 2 attempts, take any recent message
                                         {
-                                            await SaveBotMessageToDatabase(currentUserId, botResponseText);
+                                            _logger.LogInformation("Found valid bot response on attempt {Attempt}: {Response}", 
+                                                attempt + 1, messageText);
+                                            
+                                            // Save bot message to database
+                                            try
+                                            {
+                                                await SaveBotMessageToDatabase(currentUserId, messageText);
+                                            }
+                                            catch (Exception saveEx)
+                                            {
+                                                _logger.LogError(saveEx, "Failed to save bot message to database");
+                                            }
+                                            
+                                            return messageText;
                                         }
-                                        catch (Exception saveEx)
-                                        {
-                                            _logger.LogError(saveEx, "Failed to save bot message to database");
-                                        }
-                                        
-                                        return botResponseText;
                                     }
                                 }
                             }
@@ -324,26 +325,40 @@ public class BotpressService : IBotpressService
         }
     }
 
+    // Helper method to detect if a message is from bot
+    private bool IsBotMessage(string messageText)
+    {
+        if (string.IsNullOrEmpty(messageText)) return false;
+        
+        // Check for bot-like patterns
+        var botPatterns = new[]
+        {
+            "trợ lý", "thư viện", "HUIT", "hỗ trợ", "giúp đỡ", "phòng học", 
+            "mượn", "trả", "đặt phòng", "gia hạn", "quy định", "dịch vụ"
+        };
+        
+        return botPatterns.Any(pattern => messageText.ToLower().Contains(pattern.ToLower()));
+    }
+
     // Helper method to save bot message directly to database
     private async Task SaveBotMessageToDatabase(string userId, string botResponseText)
     {
         try
         {
-            if (!int.TryParse(userId, out var parsedUserId))
-            {
-                _logger.LogWarning("Cannot parse userId '{UserId}' to int when saving bot message", userId);
-                return;
-            }
-
-            // Find or create bot session for this user
             var session = await _context.PhienChats
-                .Where(p => p.MaNguoiDung == parsedUserId && p.CoBot == true)
+                .Where(p => p.MaNguoiDung.ToString() == userId && p.CoBot == true)
                 .OrderByDescending(p => p.ThoiGianBatDau)
                 .FirstOrDefaultAsync();
 
             if (session == null)
             {
-                _logger.LogWarning("No bot session found for user {UserId}, creating new one", userId);
+                // Try to parse userId to int; if fails, skip creating session
+                if (!int.TryParse(userId, out var parsedUserId))
+                {
+                    _logger.LogWarning("Cannot parse userId '{UserId}' to int when saving bot message", userId);
+                    return;
+                }
+
                 session = new PhienChat
                 {
                     MaNguoiDung = parsedUserId,
@@ -354,24 +369,23 @@ public class BotpressService : IBotpressService
                 await _context.SaveChangesAsync();
             }
 
-            // Save bot message
-            var botMessage = new TinNhan
+            var message = new TinNhan
             {
                 MaPhienChat = session.MaPhienChat,
-                MaNguoiGui = 0, // System/Bot user ID
+                MaNguoiGui = 0,
                 NoiDung = botResponseText,
                 ThoiGianGui = GetVietnamTime(),
                 LaBot = true
             };
 
-            _context.TinNhans.Add(botMessage);
+            _context.TinNhans.Add(message);
             await _context.SaveChangesAsync();
 
-            _logger.LogInformation("✅ Successfully saved bot message to database for user {UserId}: {Text}", userId, botResponseText);
+            _logger.LogInformation("✅ Saved bot message from Botpress for user {UserId}: {Text}", userId, botResponseText);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ Error saving bot message to database for user {UserId}", userId);
+            _logger.LogError(ex, "❌ Error saving bot message from Botpress for user {UserId}", userId);
         }
     }
 

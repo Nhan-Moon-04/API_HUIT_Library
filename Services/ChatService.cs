@@ -93,9 +93,7 @@ namespace HUIT_Library.Services
 
                 _logger.LogInformation("Created bot session {SessionId} for user {UserId}", session.MaPhienChat, userId);
 
-                // Send initial message or welcome message
-                string initialMessage = request?.InitialMessage ?? "Xin chào! Tôi có thể giúp gì cho bạn?";
-                
+                // Initialize Botpress conversation
                 if (!string.IsNullOrEmpty(request?.InitialMessage))
                 {
                     // User provided initial message - send it to bot and get response
@@ -113,15 +111,54 @@ namespace HUIT_Library.Services
                     _context.TinNhans.Add(userMessage);
                     await _context.SaveChangesAsync();
 
-                    // Get bot response and save it
+                    // Get bot response and save it (this will initialize the conversation)
                     var botResponse = await _botpressService.SendMessageToBotAsync(request.InitialMessage, userId.ToString());
                     await _botpressService.ProcessBotResponseAsync(botResponse, session.MaPhienChat);
                 }
                 else
                 {
-                    // Send default welcome message from bot
-                    _logger.LogInformation("Sending default welcome message from bot");
-                    await _botpressService.ProcessBotResponseAsync(initialMessage, session.MaPhienChat);
+                    // Initialize conversation with Botpress by sending a simple greeting
+                    _logger.LogInformation("Initializing Botpress conversation for user {UserId}", userId);
+                    
+                    try
+                    {
+                        // Try to initialize with a simple greeting - this should create the conversation
+                        var botResponse = await _botpressService.SendMessageToBotAsync("Hi", userId.ToString());
+                        
+                        // If we get a valid response, save it. Otherwise, use a fallback
+                        if (!string.IsNullOrEmpty(botResponse) && !botResponse.Contains("bot đang bận"))
+                        {
+                            await _botpressService.ProcessBotResponseAsync(botResponse, session.MaPhienChat);
+                            _logger.LogInformation("Botpress conversation initialized successfully for user {UserId} in session {SessionId}", userId, session.MaPhienChat);
+                        }
+                        else
+                        {
+                            // Fallback: save a welcome message manually
+                            _logger.LogWarning("Botpress initialization failed for user {UserId}, using fallback welcome message", userId);
+                            await _botpressService.ProcessBotResponseAsync("Xin chào! Tôi có thể giúp gì cho bạn?", session.MaPhienChat);
+                            
+                            // Try to initialize conversation in background - don't wait for it
+                            _ = Task.Run(async () => 
+                            {
+                                try
+                                {
+                                    await Task.Delay(2000); // Wait 2 seconds
+                                    await _botpressService.SendMessageToBotAsync("Xin chào", userId.ToString());
+                                    _logger.LogInformation("Background Botpress initialization completed for user {UserId}", userId);
+                                }
+                                catch (Exception bgEx)
+                                {
+                                    _logger.LogError(bgEx, "Background Botpress initialization failed for user {UserId}", userId);
+                                }
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error initializing Botpress conversation for user {UserId}, using fallback", userId);
+                        // Fallback: save a welcome message manually
+                        await _botpressService.ProcessBotResponseAsync("Xin chào! Tôi có thể giúp gì cho bạn?", session.MaPhienChat);
+                    }
                 }
 
                 return session;
@@ -583,6 +620,7 @@ namespace HUIT_Library.Services
         }
 
         // Get latest chat session with full message history
+        // Auto-create bot session if user has no sessions
         public async Task<ChatSessionWithMessagesDto?> GetLatestChatSessionWithMessagesAsync(int userId)
         {
             try
@@ -595,10 +633,33 @@ namespace HUIT_Library.Services
                     .OrderByDescending(p => p.ThoiGianBatDau)
                     .FirstOrDefaultAsync();
 
+                // If user has no sessions, auto-create a bot session
                 if (latestSession == null)
                 {
-                    _logger.LogInformation("No chat sessions found for user {UserId}", userId);
-                    return null;
+                    _logger.LogInformation("User {UserId} has no chat sessions, auto-creating bot session", userId);
+                    
+                    // Check if user exists
+                    var user = await _context.NguoiDungs.FindAsync(userId);
+                    if (user == null)
+                    {
+                        _logger.LogWarning("Cannot create auto bot session: user with ID {UserId} not found", userId);
+                        return null;
+                    }
+
+                    // Create bot session with welcome message
+                    var newBotSession = await CreateBotSessionAsync(userId, new CreateBotSessionRequest
+                    {
+                        InitialMessage = null // This will trigger the default welcome message
+                    });
+
+                    if (newBotSession == null)
+                    {
+                        _logger.LogWarning("Failed to auto-create bot session for user {UserId}", userId);
+                        return null;
+                    }
+
+                    latestSession = newBotSession;
+                    _logger.LogInformation("Auto-created bot session {SessionId} for user {UserId}", latestSession.MaPhienChat, userId);
                 }
 
                 // Get all messages for this session
@@ -635,14 +696,14 @@ namespace HUIT_Library.Services
                     TotalMessages = messages.Count
                 };
 
-                _logger.LogInformation("Found latest session {SessionId} with {MessageCount} messages for user {UserId}", 
+                _logger.LogInformation("Found/created session {SessionId} with {MessageCount} messages for user {UserId}", 
                     latestSession.MaPhienChat, messages.Count, userId);
 
                 return result;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting latest chat session with messages for user {UserId}", userId);
+                _logger.LogError(ex, "Error getting/creating latest chat session with messages for user {UserId}", userId);
                 return null;
             }
         }

@@ -254,6 +254,7 @@ public class ChatController : ControllerBase
     /// <summary>
     /// Get latest chat session with complete message history for current user
     /// Tự động lấy phiên chat mới nhất của user và hiển thị toàn bộ lịch sử chat
+    /// Nếu chưa có phiên chat nào thì tự động tạo phiên chat bot mới
     /// </summary>
     [Authorize]
     [HttpGet("user/latest-with-messages")]
@@ -276,19 +277,28 @@ public class ChatController : ControllerBase
 
             if (latestSessionWithMessages is null)
             {
-                return Ok(new
+                return StatusCode(500, new
                 {
-                    success = true,
+                    success = false,
                     data = (object?)null,
-                    message = "Người dùng chưa có phiên chat nào"
+                    message = "Không thể lấy hoặc tạo phiên chat cho người dùng"
                 });
             }
+
+            // Check if this is a newly created session (has only bot welcome message)
+            bool isNewSession = latestSessionWithMessages.TotalMessages == 1 && 
+                               latestSessionWithMessages.Messages.Any(m => m.LaBot == true);
+
+            var message = isNewSession 
+                ? $"Đã tự động tạo phiên chat bot mới (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với tin nhắn chào mừng"
+                : $"Đã tải thành công phiên chat mới nhất (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với {latestSessionWithMessages.TotalMessages} tin nhắn";
 
             return Ok(new
             {
                 success = true,
                 data = latestSessionWithMessages,
-                message = $"Đã tải thành công phiên chat mới nhất (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với {latestSessionWithMessages.TotalMessages} tin nhắn"
+                isNewSession = isNewSession,
+                message = message
             });
         }
         catch (Exception ex)
@@ -447,6 +457,43 @@ public class ChatController : ControllerBase
         {
             _logger.LogError(ex, "Error loading dashboard for user {UserId}", userId);
             return StatusCode(500, new { message = "Lỗi hệ thống khi tải dashboard" });
+        }
+    }
+
+    /// <summary>
+    /// Debug endpoint to test Botpress connection
+    /// </summary>
+    [Authorize]
+    [HttpPost("debug/test-bot")]
+    public async Task<IActionResult> TestBotConnection([FromBody] TestBotRequest? request = null)
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        try
+        {
+            var testMessage = request?.Message ?? "test";
+            _logger.LogInformation("Testing bot connection for user {UserId} with message: {Message}", userId, testMessage);
+
+            var botResponse = await _botpressService.SendMessageToBotAsync(testMessage, userId.ToString());
+            
+            return Ok(new {
+                success = true,
+                userId = userId,
+                testMessage = testMessage,
+                botResponse = botResponse,
+                message = "Bot connection test completed"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error testing bot connection for user {UserId}", userId);
+            return StatusCode(500, new { 
+                success = false,
+                message = "Bot connection test failed", 
+                error = ex.Message 
+            });
         }
     }
 }
