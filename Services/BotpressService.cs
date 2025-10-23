@@ -192,104 +192,135 @@ public class BotpressService : IBotpressService
         return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, vietnamTimeZone);
     }
 
-    // Poll for bot response using GET method like in your example
+    // Poll for bot response with retries
     private async Task<string?> PollForBotResponseAsync(string conversationId, string userKey, string currentUserId, int maxRetries = 6)
     {
         try
         {
             var getMessagesUrl = $"{_botpressBaseUrl}/conversations/{conversationId}/messages";
             DateTime pollStartTime = DateTime.UtcNow;
+            
+            // Get initial message count to detect new messages
+            int initialMessageCount = 0;
+            List<JsonElement> initialMessages = new List<JsonElement>();
 
             for (int attempt = 0; attempt < maxRetries; attempt++)
             {
                 _httpClient.DefaultRequestHeaders.Clear();
-                
-                // Set headers theo format API của bạn
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userKey}");
                 _httpClient.DefaultRequestHeaders.Add("x-user-key", userKey);
-
-                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId}", 
-                    attempt + 1, maxRetries, conversationId);
 
                 var response = await _httpClient.GetAsync(getMessagesUrl);
                 var messagesContent = await response.Content.ReadAsStringAsync();
 
-                _logger.LogInformation("Polling response: Status={Status}, Content length={Length}",
-                    response.StatusCode, messagesContent?.Length ?? 0);
+                _logger.LogInformation("Polling attempt {Attempt}/{MaxRetries} for conversation {ConversationId}: Status={Status}",
+                    attempt + 1, maxRetries, conversationId, response.StatusCode);
 
                 if (response.IsSuccessStatusCode)
                 {
                     try
                     {
                         var messagesJson = JsonSerializer.Deserialize<JsonElement>(messagesContent);
-                        
-                        if (!messagesJson.TryGetProperty("messages", out var messagesArray))
+                        JsonElement messagesArray;
+
+                        if (messagesJson.ValueKind == JsonValueKind.Array)
                         {
-                            _logger.LogWarning("No 'messages' property found in response on attempt {Attempt}", attempt + 1);
+                            messagesArray = messagesJson;
+                        }
+                        else if (messagesJson.TryGetProperty("messages", out var msgsProp))
+                        {
+                            messagesArray = msgsProp;
+                        }
+                        else
+                        {
+                            _logger.LogWarning("No messages array found in response on attempt {Attempt}: {Content}", 
+                                attempt + 1, messagesContent);
                             continue;
                         }
 
                         if (messagesArray.ValueKind == JsonValueKind.Array)
                         {
                             var messages = messagesArray.EnumerateArray().ToArray();
-                            _logger.LogInformation("Found {Count} total messages in conversation", messages.Length);
+                            _logger.LogInformation("Found {Count} messages in conversation", messages.Length);
 
-                            if (messages.Length == 0)
+                            // On first attempt, store initial messages to compare later
+                            if (attempt == 0)
                             {
-                                _logger.LogInformation("No messages in conversation yet, retrying...");
-                                continue;
+                                initialMessageCount = messages.Length;
+                                initialMessages = messages.ToList();
+                                _logger.LogInformation("Initial message count: {Count}", initialMessageCount);
                             }
-
-                            // Get the latest message (should be bot response if we just sent a user message)
-                            var latestMessage = messages
-                                .OrderByDescending(m => {
-                                    if (m.TryGetProperty("createdAt", out var createdAt))
-                                        return createdAt.GetString();
-                                    return "";
-                                })
-                                .FirstOrDefault();
-
-                            if (latestMessage.ValueKind != JsonValueKind.Undefined)
-                            {
-                                // Check if it's a recent message (created after we started polling)
-                                bool isRecentMessage = true;
-                                if (latestMessage.TryGetProperty("createdAt", out var createdAtProp))
-                                {
-                                    var createdAtStr = createdAtProp.GetString();
-                                    if (DateTime.TryParse(createdAtStr, out var createdAt))
+                            
+                            // Look for new messages (messages that weren't there initially)
+                            var newMessages = messages.Skip(initialMessageCount).ToArray();
+                            
+                            // Also look for recent messages in case we missed some
+                            var recentMessages = messages
+                                .Where(m => {
+                                    if (m.TryGetProperty("createdAt", out var createdAtProp))
                                     {
-                                        isRecentMessage = createdAt >= pollStartTime.AddSeconds(-30); // 30 second buffer
-                                    }
-                                }
-
-                                if (isRecentMessage && 
-                                    latestMessage.TryGetProperty("payload", out var payload) &&
-                                    payload.TryGetProperty("text", out var text))
-                                {
-                                    var messageText = text.GetString();
-                                    var messageUserId = latestMessage.TryGetProperty("userId", out var userIdProp) ? userIdProp.GetString() : "";
-                                    
-                                    _logger.LogInformation("Latest message from {UserId}: {Text}", messageUserId, messageText);
-                                    
-                                    if (!string.IsNullOrEmpty(messageText))
-                                    {
-                                        // Simple check: if message contains bot-like responses, it's probably from bot
-                                        if (IsBotMessage(messageText) || attempt >= 2) // After 2 attempts, take any recent message
+                                        var createdAtStr = createdAtProp.GetString();
+                                        if (DateTime.TryParse(createdAtStr, out var createdAt))
                                         {
-                                            _logger.LogInformation("Found valid bot response on attempt {Attempt}: {Response}", 
-                                                attempt + 1, messageText);
+                                            return createdAt >= pollStartTime.AddSeconds(-30); // Allow 30 second buffer
+                                        }
+                                    }
+                                    return false;
+                                })
+                                .ToArray();
+
+                            // Combine new messages and recent messages, then filter for potential bot messages
+                            var candidateMessages = newMessages.Concat(recentMessages).Distinct().ToArray();
+                            
+                            _logger.LogInformation("Found {NewCount} new messages and {RecentCount} recent messages", 
+                                newMessages.Length, recentMessages.Length);
+
+                            if (candidateMessages.Length > 0)
+                            {
+                                // Sort by creation time (newest first) and look for bot responses
+                                var sortedMessages = candidateMessages
+                                    .OrderByDescending(m => {
+                                        if (m.TryGetProperty("createdAt", out var createdAt))
+                                            return createdAt.GetString();
+                                        return "";
+                                    })
+                                    .ToArray();
+
+                                foreach (var message in sortedMessages)
+                                {
+                                    if (message.TryGetProperty("payload", out var payload) &&
+                                        payload.TryGetProperty("text", out var text) &&
+                                        message.TryGetProperty("userId", out var userIdProp))
+                                    {
+                                        var messageUserId = userIdProp.GetString();
+                                        var botResponseText = text.GetString();
+                                        
+                                        // Skip if no text content
+                                        if (string.IsNullOrEmpty(botResponseText)) continue;
+                                        
+                                        // Try to determine if this is a bot message by checking if the userId is different
+                                        // from what we expect for the current user (bot usually has a consistent ID)
+                                        bool isPotentialBotMessage = !string.IsNullOrEmpty(messageUserId) && 
+                                                                   !messageUserId.Contains(currentUserId);
+                                        
+                                        // Log for debugging
+                                        _logger.LogInformation("Analyzing message - UserId: {UserId}, CurrentUserId: {CurrentUserId}, Text: {Text}, IsPotentialBot: {IsPotentialBot}", 
+                                            messageUserId, currentUserId, botResponseText.Substring(0, Math.Min(100, botResponseText.Length)), isPotentialBotMessage);
+                                        
+                                        if (isPotentialBotMessage)
+                                        {
+                                            _logger.LogInformation("Found potential bot response on attempt {Attempt}: {Response}", 
+                                                attempt + 1, botResponseText);
                                             
-                                            // Save bot message to database
+                                            // Save bot message to database directly here
                                             try
                                             {
-                                                await SaveBotMessageToDatabase(currentUserId, messageText);
+                                                await SaveBotMessageToDatabase(currentUserId, botResponseText);
+                                                return botResponseText;
                                             }
                                             catch (Exception saveEx)
                                             {
                                                 _logger.LogError(saveEx, "Failed to save bot message to database");
                                             }
-                                            
-                                            return messageText;
                                         }
                                     }
                                 }
@@ -309,7 +340,7 @@ public class BotpressService : IBotpressService
                         attempt + 1, response.StatusCode, messagesContent);
                 }
 
-                // Wait before retry: 2s, 4s, 6s, 8s, 10s, 12s
+                // Progressive delay: 2s, 4s, 6s, 8s, 10s, 12s
                 var delayMs = (attempt + 1) * 2000;
                 _logger.LogInformation("Waiting {DelayMs}ms before next attempt...", delayMs);
                 await Task.Delay(delayMs);
