@@ -26,47 +26,51 @@ namespace HUIT_Library.Services
 
         public async Task<(bool Success, string? Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
         {
-            // Basic validation before calling stored procedure
+            // 1️⃣ Kiểm tra cơ bản trước khi gọi stored procedure
             if (request.MaLoaiPhong <= 0)
-                return (false, "MaLoaiPhong không hợp lệ.");
+                return (false, "Mã loại phòng không hợp lệ.");
 
-            if (request.ThoiGianKetThuc <= request.ThoiGianBatDau)
-                return (false, "Thời gian kết thúc phải lớn hơn thời gian bắt đầu.");
-
-            // Optional: require start time in the future (allow small clock skew)
+            // Không cần kiểm tra thời gian kết thúc vì mặc định +2 tiếng
             var now = DateTime.UtcNow;
+
+            // Thời gian bắt đầu phải ở hiện tại hoặc tương lai
             if (request.ThoiGianBatDau.ToUniversalTime() < now.AddMinutes(-5))
                 return (false, "Thời gian bắt đầu phải là thời điểm hiện tại hoặc trong tương lai.");
 
-            // Use stored procedure sp_DangKyPhong to find and insert a suitable room
+            // 2️⃣ Mở kết nối DB
             await using var conn = _context.Database.GetDbConnection();
             if (conn.State == ConnectionState.Closed)
                 await conn.OpenAsync();
 
+            // 3️⃣ Chuẩn bị tham số (KHÔNG có @ThoiGianKetThuc nữa)
             var parameters = new DynamicParameters();
             parameters.Add("@MaNguoiDung", userId, DbType.Int32);
             parameters.Add("@MaLoaiPhong", request.MaLoaiPhong, DbType.Int32);
             parameters.Add("@ThoiGianBatDau", request.ThoiGianBatDau, DbType.DateTime);
-            parameters.Add("@ThoiGianKetThuc", request.ThoiGianKetThuc, DbType.DateTime);
             parameters.Add("@GhiChu", request.LyDo, DbType.String);
 
             try
             {
-                _logger.LogInformation("Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={Start}, ThoiGianKetThuc={End}",
-                    userId, request.MaLoaiPhong, request.ThoiGianBatDau, request.ThoiGianKetThuc);
+                _logger.LogInformation("Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={Start}",
+                    userId, request.MaLoaiPhong, request.ThoiGianBatDau);
 
-                // Execute stored procedure. The proc may PRINT or set NOCOUNT ON; ExecuteAsync returns rows affected for INSERT but can be 0 even if insert occurred.
+                // 4️⃣ Gọi stored procedure
                 var rows = await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
 
                 _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
 
+                // 5️⃣ Kiểm tra insert thành công
                 if (rows > 0)
                 {
-                    // Try to find inserted record to include details in notification
                     try
                     {
+                        // Vì stored procedure mặc định 2 tiếng → tự tính thời gian kết thúc
+                        var endTime = request.ThoiGianBatDau.AddHours(2);
+
                         var inserted = await _context.DangKyPhongs
-                            .Where(d => d.MaNguoiDung == userId && d.ThoiGianBatDau == request.ThoiGianBatDau && d.ThoiGianKetThuc == request.ThoiGianKetThuc)
+                            .Where(d => d.MaNguoiDung == userId &&
+                                        d.ThoiGianBatDau == request.ThoiGianBatDau &&
+                                        d.ThoiGianKetThuc == endTime)
                             .OrderByDescending(d => d.MaDangKy)
                             .FirstOrDefaultAsync();
 
@@ -80,11 +84,15 @@ namespace HUIT_Library.Services
                     return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
                 }
 
-                // If stored proc returns 0 rows, verify whether a matching DangKyPhong record was inserted.
+                // 6️⃣ Nếu rows=0, thử tìm bản ghi vừa thêm
                 try
                 {
+                    var endTime = request.ThoiGianBatDau.AddHours(2);
+
                     var inserted = await _context.DangKyPhongs
-                        .Where(d => d.MaNguoiDung == userId && d.ThoiGianBatDau == request.ThoiGianBatDau && d.ThoiGianKetThuc == request.ThoiGianKetThuc)
+                        .Where(d => d.MaNguoiDung == userId &&
+                                    d.ThoiGianBatDau == request.ThoiGianBatDau &&
+                                    d.ThoiGianKetThuc == endTime)
                         .OrderByDescending(d => d.MaDangKy)
                         .FirstOrDefaultAsync();
 
@@ -109,21 +117,21 @@ namespace HUIT_Library.Services
                     _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned 0 rows.");
                 }
 
-                // If not found, report likely conflict
-                return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ. Vui lòng kiểm tra lịch hoặc tham số gửi.");
+                // 7️⃣ Không có kết quả
+                return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ.");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error while calling sp_DangKyPhong for MaNguoiDung={UserId}", userId);
-                // Log exception if logger is available. For now return a generic error message.
                 return (false, "Lỗi hệ thống khi gọi stored procedure. Vui lòng thử lại.");
             }
         }
 
+
         private async Task CreateNotificationForBookingAsync(int userId, CreateBookingRequest request, int? maDangKy)
         {
             var title = "Yêu cầu mượn phòng đã được gửi";
-            var content = $"Yêu cầu mượn phòng (Loại: {request.MaLoaiPhong}) từ {request.ThoiGianBatDau:u} đến {request.ThoiGianKetThuc:u} đã được gửi. Vui lòng chờ duyệt.";
+            var content = $"Yêu cầu mượn phòng (Loại: {request.MaLoaiPhong}) từ {request.ThoiGianBatDau:u} đã được gửi. Vui lòng chờ duyệt.";
             if (maDangKy.HasValue)
             {
                 content += $" (Mã đăng ký: {maDangKy.Value})";
