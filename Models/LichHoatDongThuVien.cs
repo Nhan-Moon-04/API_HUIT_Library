@@ -7,7 +7,7 @@ public partial class LichHoatDongThuVien
 {
     public int MaLichHoatDong { get; set; }
 
-    public string? KhuVuc { get; set; }
+    public int KhuVuc { get; set; }
 
     public byte ThuTrongTuan { get; set; }
 

@@ -9,7 +9,9 @@ public partial class DangKyPhong
 
     public int MaNguoiDung { get; set; }
 
-    public int MaPhong { get; set; }
+    public int? MaPhong { get; set; }
+
+    public int MaLoaiPhong { get; set; }
 
     public DateTime ThoiGianBatDau { get; set; }
 
@@ -19,17 +21,23 @@ public partial class DangKyPhong
 
     public int? MaTrangThai { get; set; }
 
+    public DateOnly? NgayMuon { get; set; }
+
     public int? NguoiDuyet { get; set; }
 
     public DateTime? NgayDuyet { get; set; }
 
+    public int? SoLuong { get; set; }
+
     public string? GhiChu { get; set; }
 
-    public DateTime NgayTao { get; set; }
+    public virtual LoaiPhong MaLoaiPhongNavigation { get; set; } = null!;
 
     public virtual NguoiDung MaNguoiDungNavigation { get; set; } = null!;
 
-    public virtual Phong MaPhongNavigation { get; set; } = null!;
+    public virtual Phong? MaPhongNavigation { get; set; }
 
-    public virtual ICollection<SuDungPhong> SuDungPhongs { get; set; } = new List<SuDungPhong>();
+    public virtual TrangThaiDangKy? MaTrangThaiNavigation { get; set; }
+
+    public virtual SuDungPhong? SuDungPhong { get; set; }
 }

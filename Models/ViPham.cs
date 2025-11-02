@@ -9,7 +9,7 @@ public partial class ViPham
 
     public int MaSuDung { get; set; }
 
-    public int MaQuyDinh { get; set; }
+    public int? MaQuyDinh { get; set; }
 
     public DateTime? NgayLap { get; set; }
 
@@ -17,7 +17,7 @@ public partial class ViPham
 
     public string? GhiChu { get; set; }
 
-    public virtual QuyDinhViPham MaQuyDinhNavigation { get; set; } = null!;
+    public virtual QuyDinhViPham? MaQuyDinhNavigation { get; set; }
 
     public virtual SuDungPhong MaSuDungNavigation { get; set; } = null!;
 }

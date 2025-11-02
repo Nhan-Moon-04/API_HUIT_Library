@@ -69,7 +69,7 @@ namespace HUIT_Library.Services
         {
             try
             {
-                _logger.LogInformation("Creating bot session for user {UserId} with initial message: {HasInitial}", 
+                _logger.LogInformation("Creating bot session for user {UserId} with initial message: {HasInitial}",
                     userId, !string.IsNullOrEmpty(request?.InitialMessage));
 
                 var user = await _context.NguoiDungs.FindAsync(userId);
@@ -98,7 +98,7 @@ namespace HUIT_Library.Services
                 {
                     // User provided initial message - send it to bot and get response
                     _logger.LogInformation("Sending user's initial message to bot: {Message}", request.InitialMessage);
-                    
+
                     // Save user's initial message
                     var userMessage = new TinNhan
                     {
@@ -119,12 +119,12 @@ namespace HUIT_Library.Services
                 {
                     // Initialize conversation with Botpress by sending a simple greeting
                     _logger.LogInformation("Initializing Botpress conversation for user {UserId}", userId);
-                    
+
                     try
                     {
                         // Try to initialize with a simple greeting - this should create the conversation
                         var botResponse = await _botpressService.SendMessageToBotAsync("Hi", userId.ToString());
-                        
+
                         // If we get a valid response, save it. Otherwise, use a fallback
                         if (!string.IsNullOrEmpty(botResponse) && !botResponse.Contains("bot đang bận"))
                         {
@@ -136,9 +136,9 @@ namespace HUIT_Library.Services
                             // Fallback: save a welcome message manually
                             _logger.LogWarning("Botpress initialization failed for user {UserId}, using fallback welcome message", userId);
                             await _botpressService.ProcessBotResponseAsync("Xin chào! Tôi có thể giúp gì cho bạn?", session.MaPhienChat);
-                            
+
                             // Try to initialize conversation in background - don't wait for it
-                            _ = Task.Run(async () => 
+                            _ = Task.Run(async () =>
                             {
                                 try
                                 {
@@ -175,7 +175,7 @@ namespace HUIT_Library.Services
         {
             try
             {
-                _logger.LogInformation("User {UserId} sending message to bot in session {SessionId}: {Message}", 
+                _logger.LogInformation("User {UserId} sending message to bot in session {SessionId}: {Message}",
                     userId, request.MaPhienChat, request.NoiDung);
 
                 var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
@@ -187,7 +187,7 @@ namespace HUIT_Library.Services
 
                 // Verify user exists
                 var sender = await _context.NguoiDungs.FindAsync(userId);
-                if (sender == null) 
+                if (sender == null)
                 {
                     _logger.LogWarning("User {UserId} not found when sending message to bot", userId);
                     return null;
@@ -285,7 +285,7 @@ namespace HUIT_Library.Services
             try
             {
                 var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
-                if (session == null) 
+                if (session == null)
                 {
                     _logger.LogWarning("Session {SessionId} not found for user {UserId}", request.MaPhienChat, userId);
                     return null;
@@ -293,7 +293,7 @@ namespace HUIT_Library.Services
 
                 // Verify sender exists
                 var sender = await _context.NguoiDungs.FindAsync(userId);
-                if (sender == null) 
+                if (sender == null)
                 {
                     _logger.LogWarning("User {UserId} not found when sending message", userId);
                     return null;
@@ -515,7 +515,7 @@ namespace HUIT_Library.Services
                 // Create new bot session if none exists
                 _logger.LogInformation("Creating new bot session for user {UserId}", userId);
                 var newSession = await CreateBotSessionAsync(userId, new CreateBotSessionRequest());
-                
+
                 if (newSession == null)
                 {
                     _logger.LogWarning("Failed to create bot session for user {UserId}", userId);
@@ -637,7 +637,7 @@ namespace HUIT_Library.Services
                 if (latestSession == null)
                 {
                     _logger.LogInformation("User {UserId} has no chat sessions, auto-creating bot session", userId);
-                    
+
                     // Check if user exists
                     var user = await _context.NguoiDungs.FindAsync(userId);
                     if (user == null)
@@ -696,7 +696,7 @@ namespace HUIT_Library.Services
                     TotalMessages = messages.Count
                 };
 
-                _logger.LogInformation("Found/created session {SessionId} with {MessageCount} messages for user {UserId}", 
+                _logger.LogInformation("Found/created session {SessionId} with {MessageCount} messages for user {UserId}",
                     latestSession.MaPhienChat, messages.Count, userId);
 
                 return result;

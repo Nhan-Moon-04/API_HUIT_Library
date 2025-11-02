@@ -7,7 +7,7 @@ public partial class QuanLyKyThuat
 {
     public int MaNguoiDung { get; set; }
 
-    public string? MaQuanTri { get; set; }
+    public string MaQuanTri { get; set; } = null!;
 
     public virtual NguoiDung MaNguoiDungNavigation { get; set; } = null!;
 }

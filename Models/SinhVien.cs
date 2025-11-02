@@ -7,7 +7,7 @@ public partial class SinhVien
 {
     public int MaNguoiDung { get; set; }
 
-    public string? MaSinhVien { get; set; }
+    public string MaSinhVien { get; set; } = null!;
 
     public string? Lop { get; set; }
 

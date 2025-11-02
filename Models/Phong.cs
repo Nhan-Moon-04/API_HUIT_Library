@@ -11,9 +11,11 @@ public partial class Phong
 
     public int MaLoaiPhong { get; set; }
 
-    public int? MaTrangThai { get; set; }
+    public string? TinhTrang { get; set; }
 
     public virtual ICollection<DangKyPhong> DangKyPhongs { get; set; } = new List<DangKyPhong>();
+
+    public virtual ICollection<LichDangKy> LichDangKies { get; set; } = new List<LichDangKy>();
 
     public virtual ICollection<LichTrangThaiPhong> LichTrangThaiPhongs { get; set; } = new List<LichTrangThaiPhong>();
 

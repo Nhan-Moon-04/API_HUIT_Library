@@ -34,11 +34,11 @@ namespace HUIT_Library.Controllers
                 return BadRequest(new { message = "Vui lòng g?i ít nh?t m?t tiêu chí ?ánh giá (room/service/staff) v?i ?i?m 1-5." });
 
             var now = DateTime.UtcNow;
-            var created = new List<DanhGiaTv>();
+            var created = new List<DanhGium>();
 
             if (roomScore.HasValue)
             {
-                var r = new DanhGiaTv
+                var r = new DanhGium
                 {
                     MaNguoiDung = userId,
                     LoaiDoiTuong = "Phong",
@@ -47,7 +47,7 @@ namespace HUIT_Library.Controllers
                     NoiDung = request.NoiDung,
                     NgayDanhGia = now
                 };
-                _context.DanhGiaTvs.Add(r);
+                _context.DanhGia.Add(r);
                 created.Add(r);
             }
 
@@ -55,7 +55,7 @@ namespace HUIT_Library.Controllers
             {
                 // Service review associated with booking if provided, otherwise associate with room
                 var target = request.MaDangKy != 0 ? request.MaDangKy : request.MaPhong;
-                var r = new DanhGiaTv
+                var r = new DanhGium
                 {
                     MaNguoiDung = userId,
                     LoaiDoiTuong = "DichVu",
@@ -64,13 +64,13 @@ namespace HUIT_Library.Controllers
                     NoiDung = request.NoiDung,
                     NgayDanhGia = now
                 };
-                _context.DanhGiaTvs.Add(r);
+                _context.DanhGia.Add(r);
                 created.Add(r);
             }
 
             if (staffScore.HasValue && request.MaNhanVien.HasValue)
             {
-                var r = new DanhGiaTv
+                var r = new DanhGium
                 {
                     MaNguoiDung = userId,
                     LoaiDoiTuong = "NhanVien",
@@ -79,7 +79,7 @@ namespace HUIT_Library.Controllers
                     NoiDung = request.NoiDung,
                     NgayDanhGia = now
                 };
-                _context.DanhGiaTvs.Add(r);
+                _context.DanhGia.Add(r);
                 created.Add(r);
             }
 

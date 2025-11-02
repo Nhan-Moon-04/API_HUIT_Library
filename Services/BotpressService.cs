@@ -199,15 +199,15 @@ public class BotpressService : IBotpressService
         {
             var getMessagesUrl = $"{_botpressBaseUrl}/conversations/{conversationId}/messages";
             DateTime pollStartTime = DateTime.UtcNow;
-            
+
             // Track the last message count before sending to detect truly new messages
             string? lastBotMessageId = null;
-            
+
             // Get initial state - find the most recent bot message before we start polling
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("x-user-key", userKey);
             var initialResponse = await _httpClient.GetAsync(getMessagesUrl);
-            
+
             if (initialResponse.IsSuccessStatusCode)
             {
                 var initialContent = await initialResponse.Content.ReadAsStringAsync();
@@ -232,7 +232,7 @@ public class BotpressService : IBotpressService
                     if (initialMessagesArray.ValueKind == JsonValueKind.Array)
                     {
                         var initialMessages = initialMessagesArray.EnumerateArray().ToArray();
-                        
+
                         // Find the most recent bot message ID to use as reference point
                         var latestBotMessage = initialMessages
                             .Where(m => {
@@ -292,7 +292,7 @@ public class BotpressService : IBotpressService
                         }
                         else
                         {
-                            _logger.LogWarning("No messages array found in response on attempt {Attempt}: {Content}", 
+                            _logger.LogWarning("No messages array found in response on attempt {Attempt}: {Content}",
                                 attempt + 1, messagesContent);
                             continue;
                         }
@@ -312,23 +312,23 @@ public class BotpressService : IBotpressService
                                         var messageUserId = userIdProp.GetString();
                                         var messageId = idProp.GetString();
                                         var createdAtStr = createdAtProp.GetString();
-                                        
+
                                         // Must be a bot message (not from current user)
                                         bool isBotMessage = !string.IsNullOrEmpty(messageUserId) && !messageUserId.Contains(currentUserId);
-                                        
+
                                         // Must be a new message (different ID from our reference)
                                         bool isNewMessage = !string.IsNullOrEmpty(messageId) && messageId != lastBotMessageId;
-                                        
+
                                         // Must be created after we started polling (with some buffer)
                                         bool isRecent = true;
                                         if (DateTime.TryParse(createdAtStr, out var createdAt))
                                         {
                                             isRecent = createdAt >= pollStartTime.AddSeconds(-10); // Allow 10 second buffer
                                         }
-                                        
-                                        _logger.LogDebug("Message analysis - ID: {MessageId}, UserId: {UserId}, CurrentUserId: {CurrentUserId}, IsBot: {IsBot}, IsNew: {IsNew}, IsRecent: {IsRecent}", 
+
+                                        _logger.LogDebug("Message analysis - ID: {MessageId}, UserId: {UserId}, CurrentUserId: {CurrentUserId}, IsBot: {IsBot}, IsNew: {IsNew}, IsRecent: {IsRecent}",
                                             messageId, messageUserId, currentUserId, isBotMessage, isNewMessage, isRecent);
-                                        
+
                                         return isBotMessage && isNewMessage && isRecent;
                                     }
                                     return false;
@@ -354,9 +354,9 @@ public class BotpressService : IBotpressService
                                         var botResponseText = text.GetString();
                                         if (!string.IsNullOrEmpty(botResponseText))
                                         {
-                                            _logger.LogInformation("Found NEW bot response on attempt {Attempt}: {Response}", 
+                                            _logger.LogInformation("Found NEW bot response on attempt {Attempt}: {Response}",
                                                 attempt + 1, botResponseText);
-                                            
+
                                             // Save bot message to database directly here
                                             try
                                             {
@@ -382,7 +382,7 @@ public class BotpressService : IBotpressService
                 }
                 else
                 {
-                    _logger.LogWarning("Failed to get messages on attempt {Attempt}. Status: {Status}, Response: {Response}", 
+                    _logger.LogWarning("Failed to get messages on attempt {Attempt}. Status: {Status}, Response: {Response}",
                         attempt + 1, response.StatusCode, messagesContent);
                 }
 
@@ -406,14 +406,14 @@ public class BotpressService : IBotpressService
     private bool IsBotMessage(string messageText)
     {
         if (string.IsNullOrEmpty(messageText)) return false;
-        
+
         // Check for bot-like patterns
         var botPatterns = new[]
         {
-            "trợ lý", "thư viện", "HUIT", "hỗ trợ", "giúp đỡ", "phòng học", 
+            "trợ lý", "thư viện", "HUIT", "hỗ trợ", "giúp đỡ", "phòng học",
             "mượn", "trả", "đặt phòng", "gia hạn", "quy định", "dịch vụ"
         };
-        
+
         return botPatterns.Any(pattern => messageText.ToLower().Contains(pattern.ToLower()));
     }
 

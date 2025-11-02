@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace HUIT_Library.Models;
 
-public partial class DanhGiaTv
+public partial class DanhGium
 {
     public int MaDanhGia { get; set; }
 

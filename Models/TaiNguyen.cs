@@ -13,5 +13,11 @@ public partial class TaiNguyen
 
     public string? MoTa { get; set; }
 
+    public int? TongCong { get; set; }
+
+    public int? DangSuDung { get; set; }
+
+    public int? ChuaSuDung { get; set; }
+
     public virtual ICollection<PhongTaiNguyen> PhongTaiNguyens { get; set; } = new List<PhongTaiNguyen>();
 }
