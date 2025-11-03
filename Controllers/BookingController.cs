@@ -76,5 +76,42 @@ namespace HUIT_Library.Controllers
 
             return Ok(new { message });
         }
+
+
+
+        [Authorize]
+        [HttpGet("history")]
+        public async Task<IActionResult> GetHistory([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { message = "Người dùng chưa đăng nhập hoặc thông tin không hợp lệ." });
+
+            // Validate pagination parameters
+            if (pageNumber < 1) pageNumber = 1;
+            if (pageSize < 1 || pageSize > 100) pageSize = 10;
+
+            try
+            {
+                var history = await _bookingService.GetBookingHistoryAsync(userId, pageNumber, pageSize);
+
+                return Ok(new
+                {
+                    success = true,
+                    data = history,
+                    pagination = new
+                    {
+                        pageNumber,
+                        pageSize,
+                        totalItems = history.Count
+                    },
+                    message = "Lấy lịch sử mượn phòng thành công"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Lỗi hệ thống khi lấy lịch sử mượn phòng" });
+            }
+        }
     }
 }
