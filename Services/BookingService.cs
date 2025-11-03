@@ -528,5 +528,92 @@ maDangKy, userId, now);
             }
         }
         
+        public async Task<List<CurrentBookingDto>> GetCurrentBookingsAsync(int userId)
+        {
+            try
+    {
+    _logger.LogInformation("Getting current bookings for user {UserId}", userId);
+
+ var now = GetVietnamTime();
+
+   // Lấy các đăng ký hiện tại: chờ duyệt (1), đã duyệt (2), đang sử dụng (3)
+      var query = from dk in _context.DangKyPhongs
+    join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
+    from p in phongGroup.DefaultIfEmpty()
+           join loaiPhong in _context.LoaiPhongs on dk.MaLoaiPhong equals loaiPhong.MaLoaiPhong
+       join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
+          from tt in trangThaiGroup.DefaultIfEmpty()
+         where dk.MaNguoiDung == userId && 
+           (dk.MaTrangThai == 1 || dk.MaTrangThai == 2 || dk.MaTrangThai == 3) && // Chỉ lấy trạng thái active
+   dk.ThoiGianKetThuc >= now.Date // Chỉ lấy các đăng ký chưa hết hạn
+orderby dk.ThoiGianBatDau
+         select new { dk, p, loaiPhong, tt };
+
+       var bookings = await query.ToListAsync();
+
+     var result = bookings.Select(item =>
+   {
+         var dk = item.dk;
+        var p = item.p;
+        var loaiPhong = item.loaiPhong;
+       var tt = item.tt;
+      
+    // Tính toán trạng thái và actions
+       var minutesUntilStart = (int)(dk.ThoiGianBatDau - now).TotalMinutes;
+                var minutesRemaining = (int)(dk.ThoiGianKetThuc - now).TotalMinutes;
+        
+           bool canStart = dk.MaTrangThai == 2 && minutesUntilStart <= 15 && minutesUntilStart >= -5;
+   bool canExtend = dk.MaTrangThai == 3 && minutesRemaining > 15 && now >= dk.ThoiGianBatDau && now <= dk.ThoiGianKetThuc;
+    bool canComplete = dk.MaTrangThai == 3;
+                
+ string statusDescription = dk.MaTrangThai switch
+          {
+     1 => minutesUntilStart > 0 
+     ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút"
+   : "Chờ duyệt - Đã đến giờ",
+  2 when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
+        2 when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
+   2 when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
+   2 when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
+     3 when minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
+    3 when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
+  _ => "Không xác định"
+   };
+ 
+   return new CurrentBookingDto
+    {
+         MaDangKy = dk.MaDangKy,
+      MaPhong = dk.MaPhong,
+     TenPhong = p?.TenPhong ?? "Chưa phân phòng",
+    TenLoaiPhong = loaiPhong.TenLoaiPhong,
+          ThoiGianBatDau = dk.ThoiGianBatDau,
+  ThoiGianKetThuc = dk.ThoiGianKetThuc,
+        LyDo = dk.LyDo,
+ SoLuong = dk.SoLuong,
+          GhiChu = dk.GhiChu,
+   MaTrangThai = dk.MaTrangThai ?? 0,
+   TenTrangThai = tt?.TenTrangThai ?? "Không xác định",
+            NgayDuyet = dk.NgayDuyet,
+   NgayMuon = dk.NgayMuon,
+                    CanStart = canStart,
+       CanExtend = canExtend,
+    CanComplete = canComplete,
+         StatusDescription = statusDescription,
+        MinutesUntilStart = Math.Max(0, minutesUntilStart),
+      MinutesRemaining = Math.Max(0, minutesRemaining)
+   };
+         }).ToList();
+
+     _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
+
+          return result;
+  }
+            catch (Exception ex)
+  {
+      _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
+ return new List<CurrentBookingDto>();
+            }
+        }
+    
     }
 }

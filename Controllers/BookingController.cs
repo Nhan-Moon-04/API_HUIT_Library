@@ -113,5 +113,30 @@ namespace HUIT_Library.Controllers
                 return StatusCode(500, new { message = "Lỗi hệ thống khi lấy lịch sử mượn phòng" });
             }
         }
+
+        [Authorize]
+        [HttpGet("current")]
+        public async Task<IActionResult> GetCurrentBookings()
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { message = "Người dùng chưa đăng nhập hoặc thông tin không hợp lệ." });
+
+            try
+            {
+                var currentBookings = await _bookingService.GetCurrentBookingsAsync(userId);
+
+                return Ok(new
+                {
+                    success = true,
+                    data = currentBookings,
+                    message = $"Lấy danh sách đăng ký hiện tại thành công. Tìm thấy {currentBookings.Count} đăng ký."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Lỗi hệ thống khi lấy danh sách đăng ký hiện tại" });
+            }
+        }
     }
 }
