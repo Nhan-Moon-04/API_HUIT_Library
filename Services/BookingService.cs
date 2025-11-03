@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Net.Mail;
+using System.Collections.Immutable;
 
 namespace HUIT_Library.Services
 {
@@ -17,6 +18,68 @@ namespace HUIT_Library.Services
         private readonly HuitThuVienContext _context;
         private readonly ILogger<BookingService> _logger;
         private readonly IConfiguration _configuration;
+
+        private const int DB_PENDING =1;
+        private const int DB_APPROVED =2;
+        private const int DB_REJECTED =3; // DB uses3 for "Từ chối"
+        private const int DB_INUSE =4; // DB uses4 for "Đang sử dụng"
+        private const int DB_CANCELLED =5;
+        private const int DB_USED =7; // DB uses7 for "Đã sử dụng"
+
+        // Logical booking statuses used throughout the app
+        private enum BookingStatus
+        {
+            Pending =1, // Chờ duyệt
+            Approved =2, // Đã duyệt
+            InUse =3, // Đang sử dụng
+            Rejected =4, // Từ chối
+            Cancelled =5, // Hủy
+            Used =6 // Đã sử dụng
+        }
+
+        // Map DB values (legacy/messy) to normalized BookingStatus
+        private BookingStatus MapDbToStatus(int? dbValue)
+        {
+            return dbValue switch
+            {
+                DB_PENDING => BookingStatus.Pending,
+                DB_APPROVED => BookingStatus.Approved,
+                DB_INUSE => BookingStatus.InUse,
+                DB_REJECTED => BookingStatus.Rejected,
+                DB_CANCELLED => BookingStatus.Cancelled,
+                DB_USED => BookingStatus.Used,
+                 _ => BookingStatus.Pending
+             };
+        }
+
+        // Map normalized BookingStatus back to DB value so updates write the correct legacy value
+        private int MapStatusToDb(BookingStatus status)
+        {
+            return status switch
+            {
+                BookingStatus.Pending => DB_PENDING,
+                BookingStatus.Approved => DB_APPROVED,
+                BookingStatus.InUse => DB_INUSE,
+                BookingStatus.Rejected => DB_REJECTED,
+                BookingStatus.Cancelled => DB_CANCELLED,
+                BookingStatus.Used => DB_USED,
+                 _ => DB_PENDING
+             };
+        }
+
+        private string GetStatusName(BookingStatus status)
+        {
+            return status switch
+            {
+                BookingStatus.Pending => "Chờ duyệt",
+                BookingStatus.Approved => "Đã duyệt",
+                BookingStatus.InUse => "Đang sử dụng",
+                BookingStatus.Rejected => "Từ chối",
+                BookingStatus.Cancelled => "Hủy",
+                BookingStatus.Used => "Đã sử dụng",
+                 _ => "Không xác định"
+             };
+        }
 
         public BookingService(HuitThuVienContext context, IConfiguration configuration, ILogger<BookingService> logger)
         {
@@ -477,7 +540,7 @@ maDangKy, userId, now);
                 _logger.LogInformation("Getting booking history for user {UserId}, page {PageNumber}, size {PageSize}",
       userId, pageNumber, pageSize);
 
-                // Lấy lịch sử đặt phòng của user (chỉ các phòng đã sử dụng - trạng thái 6)
+                // Lấy lịch sử đặt phòng của user (bao gồm đã từ chối(4), huỷ(5), đã sử dụng(6))
                 var query = from dk in _context.DangKyPhongs
                             join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
                             from p in phongGroup.DefaultIfEmpty()
@@ -486,7 +549,7 @@ maDangKy, userId, now);
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
-                            where dk.MaNguoiDung == userId && dk.MaTrangThai == 6 // Chỉ lấy trạng thái "đã sử dụng"
+                            where dk.MaNguoiDung == userId && (dk.MaTrangThai ==4 || dk.MaTrangThai ==5 || dk.MaTrangThai ==6)
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
                             {
@@ -531,88 +594,96 @@ maDangKy, userId, now);
         public async Task<List<CurrentBookingDto>> GetCurrentBookingsAsync(int userId)
         {
             try
-    {
-    _logger.LogInformation("Getting current bookings for user {UserId}", userId);
+ {
+ _logger.LogInformation("Getting current bookings for user {UserId}", userId);
 
  var now = GetVietnamTime();
 
-   // Lấy các đăng ký hiện tại: chờ duyệt (1), đã duyệt (2), đang sử dụng (3)
-      var query = from dk in _context.DangKyPhongs
-    join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
-    from p in phongGroup.DefaultIfEmpty()
-           join loaiPhong in _context.LoaiPhongs on dk.MaLoaiPhong equals loaiPhong.MaLoaiPhong
-       join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
-          from tt in trangThaiGroup.DefaultIfEmpty()
-         where dk.MaNguoiDung == userId && 
-           (dk.MaTrangThai == 1 || dk.MaTrangThai == 2 || dk.MaTrangThai == 3) && // Chỉ lấy trạng thái active
-   dk.ThoiGianKetThuc >= now.Date // Chỉ lấy các đăng ký chưa hết hạn
-orderby dk.ThoiGianBatDau
-         select new { dk, p, loaiPhong, tt };
+ // Lấy các đăng ký hiện tại:
+ // - luôn lấy các bản ghi đang sử dụng (DB_INUSE)
+ // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED) chỉ khi chưa quá thời gian (ThoiGianKetThuc >= now)
+ var query = from dk in _context.DangKyPhongs
+ join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
+ from p in phongGroup.DefaultIfEmpty()
+ join loaiPhong in _context.LoaiPhongs on dk.MaLoaiPhong equals loaiPhong.MaLoaiPhong
+ join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
+ from tt in trangThaiGroup.DefaultIfEmpty()
+ where dk.MaNguoiDung == userId && (
+ dk.MaTrangThai == DB_INUSE ||
+ ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) && dk.ThoiGianKetThuc >= now)
+ )
+ orderby dk.ThoiGianBatDau
+ select new { dk, p, loaiPhong, tt };
 
-       var bookings = await query.ToListAsync();
+ var bookings = await query.ToListAsync();
 
-     var result = bookings.Select(item =>
-   {
-         var dk = item.dk;
-        var p = item.p;
-        var loaiPhong = item.loaiPhong;
-       var tt = item.tt;
-      
-    // Tính toán trạng thái và actions
-       var minutesUntilStart = (int)(dk.ThoiGianBatDau - now).TotalMinutes;
-                var minutesRemaining = (int)(dk.ThoiGianKetThuc - now).TotalMinutes;
-        
-           bool canStart = dk.MaTrangThai == 2 && minutesUntilStart <= 15 && minutesUntilStart >= -5;
-   bool canExtend = dk.MaTrangThai == 3 && minutesRemaining > 15 && now >= dk.ThoiGianBatDau && now <= dk.ThoiGianKetThuc;
-    bool canComplete = dk.MaTrangThai == 3;
-                
- string statusDescription = dk.MaTrangThai switch
-          {
-     1 => minutesUntilStart > 0 
-     ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút"
-   : "Chờ duyệt - Đã đến giờ",
-  2 when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
-        2 when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
-   2 when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
-   2 when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
-     3 when minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
-    3 when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
-  _ => "Không xác định"
-   };
- 
-   return new CurrentBookingDto
-    {
-         MaDangKy = dk.MaDangKy,
-      MaPhong = dk.MaPhong,
-     TenPhong = p?.TenPhong ?? "Chưa phân phòng",
-    TenLoaiPhong = loaiPhong.TenLoaiPhong,
-          ThoiGianBatDau = dk.ThoiGianBatDau,
-  ThoiGianKetThuc = dk.ThoiGianKetThuc,
-        LyDo = dk.LyDo,
+ var result = bookings.Select(item =>
+ {
+ var dk = item.dk;
+ var p = item.p;
+ var loaiPhong = item.loaiPhong;
+ var tt = item.tt;
+
+ // Map DB status to normalized status
+ var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
+
+ // Tính toán thời gian
+ var minutesUntilStart = (int)(dk.ThoiGianBatDau - now).TotalMinutes;
+ var minutesRemaining = (int)(dk.ThoiGianKetThuc - now).TotalMinutes;
+
+ // Actions
+ var canStart = normalizedStatus == BookingStatus.Approved && minutesUntilStart <=15 && minutesUntilStart >= -5;
+ var canExtend = normalizedStatus == BookingStatus.InUse && minutesRemaining >15 && now >= dk.ThoiGianBatDau && now <= dk.ThoiGianKetThuc;
+ var canComplete = normalizedStatus == BookingStatus.InUse;
+
+ // Status description based on normalized status
+ string statusDescription = normalizedStatus switch
+ {
+ BookingStatus.Pending => minutesUntilStart >0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
+ BookingStatus.Approved when minutesUntilStart >15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart -15} phút",
+ BookingStatus.Approved when minutesUntilStart <=15 && minutesUntilStart >0 => "Đã duyệt - Có thể checkin ngay",
+ BookingStatus.Approved when minutesUntilStart <=0 && minutesRemaining >0 => "Đã duyệt - Đã đến giờ, có thể checkin",
+ BookingStatus.Approved when minutesRemaining <=0 => "Đã duyệt - Đã quá giờ",
+ BookingStatus.InUse when minutesRemaining >0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
+ BookingStatus.InUse when minutesRemaining <=0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
+ _ => GetStatusName(normalizedStatus)
+ };
+
+ return new CurrentBookingDto
+ {
+ MaDangKy = dk.MaDangKy,
+ MaPhong = dk.MaPhong,
+ TenPhong = p?.TenPhong ?? "Chưa phân phòng",
+ TenLoaiPhong = loaiPhong?.TenLoaiPhong,
+ ThoiGianBatDau = dk.ThoiGianBatDau,
+ ThoiGianKetThuc = dk.ThoiGianKetThuc,
+ LyDo = dk.LyDo,
  SoLuong = dk.SoLuong,
-          GhiChu = dk.GhiChu,
-   MaTrangThai = dk.MaTrangThai ?? 0,
-   TenTrangThai = tt?.TenTrangThai ?? "Không xác định",
-            NgayDuyet = dk.NgayDuyet,
-   NgayMuon = dk.NgayMuon,
-                    CanStart = canStart,
-       CanExtend = canExtend,
-    CanComplete = canComplete,
-         StatusDescription = statusDescription,
-        MinutesUntilStart = Math.Max(0, minutesUntilStart),
-      MinutesRemaining = Math.Max(0, minutesRemaining)
-   };
-         }).ToList();
+ GhiChu = dk.GhiChu,
+ MaTrangThai = dk.MaTrangThai ??0,
+ // Use normalized status name so UI consistent
+ TenTrangThai = GetStatusName(normalizedStatus),
+ NgayDuyet = dk.NgayDuyet,
+ NgayMuon = dk.NgayMuon,
 
-     _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
+ CanStart = canStart,
+ CanExtend = canExtend,
+ CanComplete = canComplete,
+ StatusDescription = statusDescription,
+ MinutesUntilStart = Math.Max(0, minutesUntilStart),
+ MinutesRemaining = Math.Max(0, minutesRemaining)
+ };
+ }).ToList();
 
-          return result;
-  }
-            catch (Exception ex)
-  {
-      _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
+ _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
+
+ return result;
+ }
+ catch (Exception ex)
+ {
+ _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
  return new List<CurrentBookingDto>();
-            }
+ }
         }
     
     }
