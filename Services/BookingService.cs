@@ -113,33 +113,35 @@ namespace HUIT_Library.Services
 
         public async Task<(bool Success, string? Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
         {
-            //1️⃣ Kiểm tra cơ bản
+            // 1️⃣ Kiểm tra dữ liệu đầu vào
             if (request.MaLoaiPhong <= 0)
                 return (false, "Mã loại phòng không hợp lệ.");
 
             if (request.ThoiGianBatDau == default)
                 return (false, "Thời gian bắt đầu không hợp lệ.");
 
-            var nowVn = GetVietnamTime(); // Sử dụng giờ Việt Nam
+            var nowVn = GetVietnamTime(); // Giờ hiện tại ở VN
 
-            // Treat incoming request.ThoiGianBatDau as Vietnam local time and validate against now (VN)
+            // Gán loại DateTime rõ ràng (local VN)
             var requestedStartVn = DateTime.SpecifyKind(request.ThoiGianBatDau, DateTimeKind.Unspecified);
+
+            // Kiểm tra phải là thời gian trong tương lai
             if (requestedStartVn < nowVn.AddMinutes(-5))
                 return (false, "Thời gian bắt đầu phải là hiện tại hoặc trong tương lai.");
 
-            // Convert to UTC for DB / stored procedure
-            var startUtc = ToUtcFromVietnam(requestedStartVn);
+            // 👉 Không convert sang UTC nữa, vì store xử lý theo giờ VN
+            var startForDb = requestedStartVn;
 
-            //2️⃣ Mở kết nối DB
+            // 2️⃣ Mở kết nối DB
             await using var conn = _context.Database.GetDbConnection();
             if (conn.State == ConnectionState.Closed)
                 await conn.OpenAsync();
 
-            //3️⃣ Chuẩn bị tham số tương ứng với sp_DangKyPhong
+            // 3️⃣ Tham số cho sp_DangKyPhong
             var parameters = new DynamicParameters();
             parameters.Add("@MaNguoiDung", userId, DbType.Int32);
             parameters.Add("@MaLoaiPhong", request.MaLoaiPhong, DbType.Int32);
-            parameters.Add("@ThoiGianBatDau", startUtc, DbType.DateTime);
+            parameters.Add("@ThoiGianBatDau", startForDb, DbType.DateTime); // ⚡ đã sửa
             parameters.Add("@LyDo", request.LyDo, DbType.String);
             parameters.Add("@SoLuong", request.SoLuong > 0 ? request.SoLuong : 1, DbType.Int32);
             parameters.Add("@GhiChu", request.GhiChu, DbType.String);
@@ -147,25 +149,25 @@ namespace HUIT_Library.Services
             try
             {
                 _logger.LogInformation(
-                    "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={StartUtc}",
-                    userId, request.MaLoaiPhong, startUtc);
+                    "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={StartForDb}",
+                    userId, request.MaLoaiPhong, startForDb);
 
-                //4️⃣ Gọi stored procedure
+                // 4️⃣ Gọi stored procedure
                 var rows = await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
 
                 _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
 
-                //5️⃣ Kiểm tra insert thành công
+                // 5️⃣ Nếu insert thành công
                 if (rows > 0)
                 {
                     try
                     {
-                        var endUtc = startUtc.AddHours(2);
+                        var endVn = startForDb.AddHours(2);
 
                         var inserted = await _context.DangKyPhongs
                             .Where(d => d.MaNguoiDung == userId &&
-                                        d.ThoiGianBatDau == startUtc &&
-                                        d.ThoiGianKetThuc == endUtc)
+                                        d.ThoiGianBatDau == startForDb &&
+                                        d.ThoiGianKetThuc == endVn)
                             .OrderByDescending(d => d.MaDangKy)
                             .FirstOrDefaultAsync();
 
@@ -180,22 +182,22 @@ namespace HUIT_Library.Services
                     return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
                 }
 
-                //6️⃣ Nếu rows=0, thử tìm bản ghi vừa thêm (phòng hợp lệ nhưng SP chỉ PRINT)
+                // 6️⃣ Nếu rows = 0, thử tìm bản ghi vừa thêm (SP chỉ PRINT)
                 try
                 {
-                    var endUtc = startUtc.AddHours(2);
+                    var endVn = startForDb.AddHours(2);
 
                     var inserted = await _context.DangKyPhongs
                         .Where(d => d.MaNguoiDung == userId &&
-                                    d.ThoiGianBatDau == startUtc &&
-                                    d.ThoiGianKetThuc == endUtc)
+                                    d.ThoiGianBatDau == startForDb &&
+                                    d.ThoiGianKetThuc == endVn)
                         .OrderByDescending(d => d.MaDangKy)
                         .FirstOrDefaultAsync();
 
                     if (inserted != null)
                     {
                         _logger.LogInformation(
-                            "Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning0 rows.",
+                            "Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning 0 rows.",
                             inserted.MaDangKy);
 
                         await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
@@ -204,10 +206,10 @@ namespace HUIT_Library.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned0 rows.");
+                    _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned 0 rows.");
                 }
 
-                //7️⃣ Không có kết quả
+                // 7️⃣ Không có kết quả
                 return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ.");
             }
             catch (Exception ex)
@@ -215,8 +217,8 @@ namespace HUIT_Library.Services
                 _logger.LogError(ex, "Error while calling sp_DangKyPhong for MaNguoiDung={UserId}", userId);
                 return (false, $"Lỗi hệ thống khi gọi stored procedure: {ex.Message}");
             }
-
         }
+
 
 
 
@@ -428,53 +430,52 @@ namespace HUIT_Library.Services
                     var reviewLink = $"{reviewLinkBase}?maDangKy={maDangKy}&maPhong={booking.MaPhong}";
 
                     var body = $@"
-             <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
-               <div style='text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; color: white; margin-bottom: 30px;'>
-                        <h1 style='margin: 0; font-size: 28px;'>✅ Trả phòng thành công!</h1>
-                   <p style='margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;'>HUIT Library</p>
-                    </div>
+ <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
+   <div style='text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; color: white; margin-bottom: 30px;'>
+            <h1 style='margin: 0; font-size: 28px;'>✅ Trả phòng thành công!</h1>
+       <p style='margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;'>HUIT Library</p>
+        </div>
             
-                        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #28a745; margin-bottom: 25px;'>
-                            <p style='margin: 0 0 10px 0;'>Xin chào <strong>{System.Net.WebUtility.HtmlEncode(user.HoTen ?? "")}</strong>,</p>
-               <p style='margin: 0; color: #28a745; font-weight: 600;'>Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)</p>
-                {(isEarlyReturn ? $"<p style='margin: 5px 0 0 0; color: #17a2b8;'>🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!</p>" : "")}
-                        </div>
+            <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #28a745; margin-bottom: 25px;'>
+                <p style='margin: 0 0 10px 0;'>Xin chào <strong>{System.Net.WebUtility.HtmlEncode(user.HoTen ?? "")}</strong>,</p>
+   <p style='margin: 0; color: #28a745; font-weight: 600;'>Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)</p>
+    {(isEarlyReturn ? $"<p style='margin: 5px 0 0 0; color: #17a2b8;'>🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!</p>" : "")}
+            </div>
 
-              <div style='background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; margin-bottom: 25px;'>
-                    <h3 style='color: #495057; margin: 0 0 15px 0; border-bottom: 2px solid #e9ecef; padding-bottom: 10px;'>📊 Thông tin chi tiết</h3>
-               <table style='width: 100%; border-collapse: collapse;'>
-              <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Mã đăng ký:</strong></td><td style='padding: 8px 0;'>#{maDangKy}</td></tr>
-                     <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Phòng:</strong></td><td style='padding: 8px 0;'>{booking.MaPhongNavigation?.TenPhong ?? "Chưa xác định"}</td></tr>
-                  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian đặt:</strong></td><td style='padding: 8px 0;'>{booking.ThoiGianBatDau:HH:mm dd/MM/yyyy} - {booking.ThoiGianKetThuc:HH:mm dd/MM/yyyy}</td></tr>
-                      <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian thực tế:</strong></td><td style='padding: 8px 0;'>{actualStartTime:HH:mm dd/MM/yyyy} - {now:HH:mm dd/MM/yyyy}</td></tr>
-                    <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian sử dụng:</strong></td><td style='padding: 8px 0;'>{usageDuration.TotalMinutes:0} phút</td></tr>
-              <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Tình trạng phòng:</strong></td><td style='padding: 8px 0; color: #28a745;'>✅ {usage.TinhTrangPhong}</td></tr>
-                 </table>
-              </div>
+  <div style='background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; margin-bottom: 25px;'>
+        <h3 style='color: #495057; margin: 0 0 15px 0; border-bottom: 2px solid #e9ecef; padding-bottom: 10px;'>📊 Thông tin chi tiết</h3>
+   <table style='width: 100%; border-collapse: collapse;'>
+  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Mã đăng ký:</strong></td><td style='padding: 8px 0;'>#{maDangKy}</td></tr>
+         <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Phòng:</strong></td><td style='padding: 8px 0;'>{booking.MaPhongNavigation?.TenPhong ?? "Chưa xác định"}</td></tr>
+      <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian đặt:</strong></td><td style='padding: 8px 0;'>{booking.ThoiGianBatDau:HH:mm dd/MM/yyyy} - {booking.ThoiGianKetThuc:HH:mm dd/MM/yyyy}</td></tr>
+          <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian thực tế:</strong></td><td style='padding: 8px 0;'>{actualStartTime:HH:mm dd/MM/yyyy} - {now:HH:mm dd/MM/yyyy}</td></tr>
+        <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian sử dụng:</strong></td><td style='padding: 8px 0;'>{usageDuration.TotalMinutes:0} phút</td></tr>
+  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Tình trạng phòng:</strong></td><td style='padding: 8px 0; color: #28a745;'>✅ {usage.TinhTrangPhong}</td></tr>
+     </table>
+  </div>
    
-                        <div style='text-align: center; background: #fff3cd; padding: 20px; border-radius: 8px; border: 1px solid #ffeaa7; margin-bottom: 25px;'>
-                       <h3 style='color: #856404; margin: 0 0 15px 0;'>🌟 Đánh giá trải nghiệm của bạn</h3>
-                   <p style='color: #856404; margin: 0 0 20px 0;'>Ý kiến của bạn giúp chúng tôi cải thiện chất lượng dịch vụ!</p>
+            <div style='text-align: center; background: #fff3cd; padding: 20px; border-radius: 8px; border: 1px solid #ffeaa7; margin-bottom: 25px;'>
+           <h3 style='color: #856404; margin: 0 0 15px 0;'>🌟 Đánh giá trải nghiệm của bạn</h3>
+       <p style='color: #856404; margin: 0 0 20px 0;'>Ý kiến của bạn giúp chúng tôi cải thiện chất lượng dịch vụ!</p>
            
-                            <div style='display: inline-block;'>
-                      <a href='{reviewLink}&type=room' style='display: inline-block; background: #28a745; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-               📍 Đánh giá phòng
-                </a>
-                       <a href='{reviewLink}&type=service' style='display: inline-block; background: #17a2b8; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-               🛎️ Đánh giá dịch vụ  
-                        </a>
-               <a href='{reviewLink}&type=staff' style='display: inline-block; background: #ffc107; color: #212529; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-                    👥 Đánh giá nhân viên
-
-                       </a>
-             </div>
-                        </div>
+                <div style='display: inline-block;'>
+          <a href='{reviewLink}&type=room' style='display: inline-block; background: #28a745; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+   📍 Đánh giá phòng
+    </a>
+           <a href='{reviewLink}&type=service' style='display: inline-block; background: #17a2b8; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+   🛎️ Đánh giá dịch vụ  
+            </a>
+   <a href='{reviewLink}&type=staff' style='display: inline-block; background: #ffc107; color: #212529; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+        👥 Đánh giá nhân viên
+           </a>
+ </div>
+            </div>
    
-                   <div style='text-align: center; color: #6c757d; padding: 20px; border-top: 1px solid #e9ecef;'>
-                         <p style='margin: 0 0 5px 0; font-style: italic;'>Cảm ơn bạn đã tin tướng và sử dụng dịch vụ của chúng tôi!</p>
-                         <p style='margin: 0; font-weight: 600; color: #495057;'>📚 HUIT Library Team</p>
-                </div>
-                    </div>";
+       <div style='text-align: center; color: #6c757d; padding: 20px; border-top: 1px solid #e9ecef;'>
+             <p style='margin: 0 0 5px 0; font-style: italic;'>Cảm ơn bạn đã tin tướng và sử dụng dịch vụ của chúng tôi!</p>
+             <p style='margin: 0; font-weight: 600; color: #495057;'>📚 HUIT Library Team</p>
+    </div>
+        </div>";
 
                     await SendEmailAsync(user.Email, "✅ Trả phòng thành công - Cảm ơn bạn!", body);
                     _logger.LogInformation("Sent completion email to user {UserId} at {Email}", userId, user.Email);
@@ -713,7 +714,6 @@ namespace HUIT_Library.Services
                 return new List<CurrentBookingDto>();
             }
         }
-
 
     }
 }
