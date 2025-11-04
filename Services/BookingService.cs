@@ -19,22 +19,22 @@ namespace HUIT_Library.Services
         private readonly ILogger<BookingService> _logger;
         private readonly IConfiguration _configuration;
 
-        private const int DB_PENDING =1;
-        private const int DB_APPROVED =2;
-        private const int DB_REJECTED =3; // DB uses3 for "Từ chối"
-        private const int DB_INUSE =4; // DB uses4 for "Đang sử dụng"
-        private const int DB_CANCELLED =5;
-        private const int DB_USED =7; // DB uses7 for "Đã sử dụng"
+        private const int DB_PENDING = 1;
+        private const int DB_APPROVED = 2;
+        private const int DB_REJECTED = 3; // DB uses3 for "Từ chối"
+        private const int DB_INUSE = 4; // DB uses4 for "Đang sử dụng"
+        private const int DB_CANCELLED = 5;
+        private const int DB_USED = 7; // DB uses7 for "Đã sử dụng"
 
         // Logical booking statuses used throughout the app
         private enum BookingStatus
         {
-            Pending =1, // Chờ duyệt
-            Approved =2, // Đã duyệt
-            InUse =3, // Đang sử dụng
-            Rejected =4, // Từ chối
-            Cancelled =5, // Hủy
-            Used =6 // Đã sử dụng
+            Pending = 1, // Chờ duyệt
+            Approved = 2, // Đã duyệt
+            InUse = 3, // Đang sử dụng
+            Rejected = 4, // Từ chối
+            Cancelled = 5, // Hủy
+            Used = 6 // Đã sử dụng
         }
 
         // Map DB values (legacy/messy) to normalized BookingStatus
@@ -48,8 +48,8 @@ namespace HUIT_Library.Services
                 DB_REJECTED => BookingStatus.Rejected,
                 DB_CANCELLED => BookingStatus.Cancelled,
                 DB_USED => BookingStatus.Used,
-                 _ => BookingStatus.Pending
-             };
+                _ => BookingStatus.Pending
+            };
         }
 
         // Map normalized BookingStatus back to DB value so updates write the correct legacy value
@@ -63,8 +63,8 @@ namespace HUIT_Library.Services
                 BookingStatus.Rejected => DB_REJECTED,
                 BookingStatus.Cancelled => DB_CANCELLED,
                 BookingStatus.Used => DB_USED,
-                 _ => DB_PENDING
-             };
+                _ => DB_PENDING
+            };
         }
 
         private string GetStatusName(BookingStatus status)
@@ -77,8 +77,8 @@ namespace HUIT_Library.Services
                 BookingStatus.Rejected => "Từ chối",
                 BookingStatus.Cancelled => "Hủy",
                 BookingStatus.Used => "Đã sử dụng",
-                 _ => "Không xác định"
-             };
+                _ => "Không xác định"
+            };
         }
 
         public BookingService(HuitThuVienContext context, IConfiguration configuration, ILogger<BookingService> logger)
@@ -89,35 +89,57 @@ namespace HUIT_Library.Services
         }
 
         // Helper method to get Vietnam timezone
+        private static readonly TimeZoneInfo VietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
         private DateTime GetVietnamTime()
         {
-            var vietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
-            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, vietnamTimeZone);
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, VietnamTimeZone);
+        }
+
+        // Convert a DateTime that is provided in Vietnam local time (no offset) to UTC for storage
+        private DateTime ToUtcFromVietnam(DateTime vietnamLocal)
+        {
+            var v = DateTime.SpecifyKind(vietnamLocal, DateTimeKind.Unspecified);
+            var offset = VietnamTimeZone.GetUtcOffset(v);
+            var dto = new DateTimeOffset(v, offset);
+            return dto.UtcDateTime;
+        }
+
+        // Convert a UTC DateTime (from DB) to Vietnam local time for display
+        private DateTime FromUtcToVietnam(DateTime utc)
+        {
+            var asUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+            return TimeZoneInfo.ConvertTimeFromUtc(asUtc, VietnamTimeZone);
         }
 
         public async Task<(bool Success, string? Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
         {
-            // 1️⃣ Kiểm tra cơ bản
+            //1️⃣ Kiểm tra cơ bản
             if (request.MaLoaiPhong <= 0)
                 return (false, "Mã loại phòng không hợp lệ.");
 
             if (request.ThoiGianBatDau == default)
                 return (false, "Thời gian bắt đầu không hợp lệ.");
-            
-            var now = GetVietnamTime(); // Sử dụng giờ Việt Nam
-            if (request.ThoiGianBatDau < now.AddMinutes(-5))
+
+            var nowVn = GetVietnamTime(); // Sử dụng giờ Việt Nam
+
+            // Treat incoming request.ThoiGianBatDau as Vietnam local time and validate against now (VN)
+            var requestedStartVn = DateTime.SpecifyKind(request.ThoiGianBatDau, DateTimeKind.Unspecified);
+            if (requestedStartVn < nowVn.AddMinutes(-5))
                 return (false, "Thời gian bắt đầu phải là hiện tại hoặc trong tương lai.");
 
-            // 2️⃣ Mở kết nối DB
+            // Convert to UTC for DB / stored procedure
+            var startUtc = ToUtcFromVietnam(requestedStartVn);
+
+            //2️⃣ Mở kết nối DB
             await using var conn = _context.Database.GetDbConnection();
             if (conn.State == ConnectionState.Closed)
                 await conn.OpenAsync();
 
-            // 3️⃣ Chuẩn bị tham số tương ứng với sp_DangKyPhong
+            //3️⃣ Chuẩn bị tham số tương ứng với sp_DangKyPhong
             var parameters = new DynamicParameters();
             parameters.Add("@MaNguoiDung", userId, DbType.Int32);
             parameters.Add("@MaLoaiPhong", request.MaLoaiPhong, DbType.Int32);
-            parameters.Add("@ThoiGianBatDau", request.ThoiGianBatDau, DbType.DateTime);
+            parameters.Add("@ThoiGianBatDau", startUtc, DbType.DateTime);
             parameters.Add("@LyDo", request.LyDo, DbType.String);
             parameters.Add("@SoLuong", request.SoLuong > 0 ? request.SoLuong : 1, DbType.Int32);
             parameters.Add("@GhiChu", request.GhiChu, DbType.String);
@@ -125,25 +147,25 @@ namespace HUIT_Library.Services
             try
             {
                 _logger.LogInformation(
-                    "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={Start}",
-                    userId, request.MaLoaiPhong, request.ThoiGianBatDau);
+                    "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={StartUtc}",
+                    userId, request.MaLoaiPhong, startUtc);
 
-                // 4️⃣ Gọi stored procedure
+                //4️⃣ Gọi stored procedure
                 var rows = await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
 
                 _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
 
-                // 5️⃣ Kiểm tra insert thành công
+                //5️⃣ Kiểm tra insert thành công
                 if (rows > 0)
                 {
                     try
                     {
-                        var endTime = request.ThoiGianBatDau.AddHours(2);
+                        var endUtc = startUtc.AddHours(2);
 
                         var inserted = await _context.DangKyPhongs
                             .Where(d => d.MaNguoiDung == userId &&
-                                        d.ThoiGianBatDau == request.ThoiGianBatDau &&
-                                        d.ThoiGianKetThuc == endTime)
+                                        d.ThoiGianBatDau == startUtc &&
+                                        d.ThoiGianKetThuc == endUtc)
                             .OrderByDescending(d => d.MaDangKy)
                             .FirstOrDefaultAsync();
 
@@ -158,22 +180,22 @@ namespace HUIT_Library.Services
                     return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
                 }
 
-                // 6️⃣ Nếu rows=0, thử tìm bản ghi vừa thêm (phòng hợp lệ nhưng SP chỉ PRINT)
+                //6️⃣ Nếu rows=0, thử tìm bản ghi vừa thêm (phòng hợp lệ nhưng SP chỉ PRINT)
                 try
                 {
-                    var endTime = request.ThoiGianBatDau.AddHours(2);
+                    var endUtc = startUtc.AddHours(2);
 
                     var inserted = await _context.DangKyPhongs
                         .Where(d => d.MaNguoiDung == userId &&
-                                    d.ThoiGianBatDau == request.ThoiGianBatDau &&
-                                    d.ThoiGianKetThuc == endTime)
+                                    d.ThoiGianBatDau == startUtc &&
+                                    d.ThoiGianKetThuc == endUtc)
                         .OrderByDescending(d => d.MaDangKy)
                         .FirstOrDefaultAsync();
 
                     if (inserted != null)
                     {
                         _logger.LogInformation(
-                            "Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning 0 rows.",
+                            "Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning0 rows.",
                             inserted.MaDangKy);
 
                         await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
@@ -182,10 +204,10 @@ namespace HUIT_Library.Services
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned 0 rows.");
+                    _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned0 rows.");
                 }
 
-                // 7️⃣ Không có kết quả
+                //7️⃣ Không có kết quả
                 return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ.");
             }
             catch (Exception ex)
@@ -291,188 +313,189 @@ namespace HUIT_Library.Services
         public async Task<(bool Success, string? Message)> CompleteBookingAsync(int userId, int maDangKy)
         {
             // Verify booking exists
-   var booking = await _context.DangKyPhongs.FindAsync(maDangKy);
-         if (booking == null)
-          return (false, "Đăng ký không tồn tại.");
+            var booking = await _context.DangKyPhongs.FindAsync(maDangKy);
+            if (booking == null)
+                return (false, "Đăng ký không tồn tại.");
 
             if (booking.MaNguoiDung != userId)
-        return (false, "Bạn không có quyền trả phòng cho đăng ký này.");
+                return (false, "Bạn không có quyền trả phòng cho đăng ký này.");
 
             // Kiểm tra trạng thái hiện tại - chỉ cho phép trả phòng khi đang sử dụng (trạng thái 3)
-    if (booking.MaTrangThai != 3)
- {
-       var statusMessage = booking.MaTrangThai switch
-    {
- 1 => "Đăng ký đang chờ duyệt, chưa thể trả phòng",
-      2 => "Đăng ký đã được duyệt nhưng chưa bắt đầu sử dụng phòng",
-                 4 => "Đăng ký đã bị từ chối", 
-                5 => "Đăng ký đã bị hủy",
-        6 => "Phòng đã được trả rồi",
-          _ => "Trạng thái không hợp lệ để trả phòng"
-        };
-       return (false, statusMessage);
-     }
-
-   var now = GetVietnamTime(); // Sử dụng giờ Việt Nam
-            
-       // Tìm bản ghi sử dụng phòng (phải có vì đã ở trạng thái 3)
-            var usage = await _context.SuDungPhongs.FirstOrDefaultAsync(s => s.MaDangKy == maDangKy);
-       if (usage == null)
-  {
-    // Tạo bản ghi nếu không có (trường hợp đặc biệt)
-   usage = new SuDungPhong
-      {
-      MaDangKy = maDangKy,
-   GioBatDauThucTe = booking.ThoiGianBatDau, // Thời gian dự kiến
-        GioKetThucThucTe = now,
-  TinhTrangPhong = "Tốt",
-    GhiChu = "Trả phòng - Tạo bản ghi sử dụng tự động"
-         };
-     _context.SuDungPhongs.Add(usage);
-           _logger.LogWarning("Missing usage record for booking {MaDangKy}, creating automatically", maDangKy);
-  }
-         else
+            if (booking.MaTrangThai != 3)
             {
-         // Cập nhật thời gian kết thúc thực tế
-         usage.GioKetThucThucTe = now;
-          
-                // Cập nhật tình trạng phòng nếu chưa có
-       if (string.IsNullOrEmpty(usage.TinhTrangPhong))
-  usage.TinhTrangPhong = "Tốt";
-                
-    // Cập nhật ghi chú
-              if (string.IsNullOrEmpty(usage.GhiChu))
-       usage.GhiChu = "Trả phòng bởi người dùng";
-         else if (!usage.GhiChu.Contains("Trả phòng"))
-    usage.GhiChu += " - Trả phòng bởi người dùng";
-        }
-
-        // Cập nhật trạng thái đăng ký từ 3 (sử dụng phòng) lên 6 (đã sử dụng)
-    booking.MaTrangThai = 6;
-
-       // Tính toán thời gian sử dụng
-  var actualStartTime = usage.GioBatDauThucTe ?? booking.ThoiGianBatDau;
-      var usageDuration = now - actualStartTime;
- var scheduledDuration = booking.ThoiGianKetThuc - booking.ThoiGianBatDau;
-
-          try
-  {
-        await _context.SaveChangesAsync();
-             _logger.LogInformation("Successfully completed booking {MaDangKy} for user {UserId} at {CompletionTime}", 
-maDangKy, userId, now);
+                var statusMessage = booking.MaTrangThai switch
+                {
+                    1 => "Đăng ký đang chờ duyệt, chưa thể trả phòng",
+                    2 => "Đăng ký đã được duyệt nhưng chưa bắt đầu sử dụng phòng",
+                    4 => "Đăng ký đã bị từ chối",
+                    5 => "Đăng ký đã bị hủy",
+                    6 => "Phòng đã được trả rồi",
+                    _ => "Trạng thái không hợp lệ để trả phòng"
+                };
+                return (false, statusMessage);
             }
-         catch (Exception ex)
-   {
- _logger.LogError(ex, "Error saving completion for MaDangKy={MaDangKy}", maDangKy);
-      return (false, "Lỗi khi cập nhật trạng thái hoàn thành. Vui lòng thử lại.");
-   }
 
-         // Tạo thông báo cảm ơn với thông tin chi tiết
- var reviewUrl = _configuration["Frontend:ReviewUrl"] ?? "https://frontend.example.com/review";
+            var now = GetVietnamTime(); // Sử dụng giờ Việt Nam
+
+            // Tìm bản ghi sử dụng phòng (phải có vì đã ở trạng thái 3)
+            var usage = await _context.SuDungPhongs.FirstOrDefaultAsync(s => s.MaDangKy == maDangKy);
+            if (usage == null)
+            {
+                // Tạo bản ghi nếu không có (trường hợp đặc biệt)
+                usage = new SuDungPhong
+                {
+                    MaDangKy = maDangKy,
+                    GioBatDauThucTe = booking.ThoiGianBatDau, // Thời gian dự kiến
+                    GioKetThucThucTe = now,
+                    TinhTrangPhong = "Tốt",
+                    GhiChu = "Trả phòng - Tạo bản ghi sử dụng tự động"
+                };
+                _context.SuDungPhongs.Add(usage);
+                _logger.LogWarning("Missing usage record for booking {MaDangKy}, creating automatically", maDangKy);
+            }
+            else
+            {
+                // Cập nhật thời gian kết thúc thực tế
+                usage.GioKetThucThucTe = now;
+
+                // Cập nhật tình trạng phòng nếu chưa có
+                if (string.IsNullOrEmpty(usage.TinhTrangPhong))
+                    usage.TinhTrangPhong = "Tốt";
+
+                // Cập nhật ghi chú
+                if (string.IsNullOrEmpty(usage.GhiChu))
+                    usage.GhiChu = "Trả phòng bởi người dùng";
+                else if (!usage.GhiChu.Contains("Trả phòng"))
+                    usage.GhiChu += " - Trả phòng bởi người dùng";
+            }
+
+            // Cập nhật trạng thái đăng ký từ 3 (sử dụng phòng) lên 6 (đã sử dụng)
+            booking.MaTrangThai = 6;
+
+            // Tính toán thời gian sử dụng
+            var actualStartTime = usage.GioBatDauThucTe ?? booking.ThoiGianBatDau;
+            var usageDuration = now - actualStartTime;
+            var scheduledDuration = booking.ThoiGianKetThuc - booking.ThoiGianBatDau;
+
+            try
+            {
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Successfully completed booking {MaDangKy} for user {UserId} at {CompletionTime}",
+   maDangKy, userId, now);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error saving completion for MaDangKy={MaDangKy}", maDangKy);
+                return (false, "Lỗi khi cập nhật trạng thái hoàn thành. Vui lòng thử lại.");
+            }
+
+            // Tạo thông báo cảm ơn với thông tin chi tiết
+            var reviewUrl = _configuration["Frontend:ReviewUrl"] ?? "https://frontend.example.com/review";
             var isEarlyReturn = now < booking.ThoiGianKetThuc;
-     var timeInfo = isEarlyReturn ? 
-      $"Bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút" :
-        "Bạn đã trả phòng đúng giờ";
+            var timeInfo = isEarlyReturn ?
+             $"Bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút" :
+               "Bạn đã trả phòng đúng giờ";
 
             var thongBao = new ThongBao
             {
-      MaNguoiDung = userId,
-        TieuDe = "✅ Trả phòng thành công",
-        NoiDung = $"Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy}. {timeInfo}. " +
+                MaNguoiDung = userId,
+                TieuDe = "✅ Trả phòng thành công",
+                NoiDung = $"Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy}. {timeInfo}. " +
  $"Thời gian sử dụng thực tế: {usageDuration.TotalMinutes:0} phút. " +
             $"Cảm ơn bạn đã sử dụng dịch vụ! Đánh giá tại: {reviewUrl}?maDangKy={maDangKy}",
-  NgayTao = now,
-      DaDoc = false
+                NgayTao = now,
+                DaDoc = false
             };
 
             _context.ThongBaos.Add(thongBao);
             try
             {
-     await _context.SaveChangesAsync();
-    _logger.LogInformation("Created completion notification for user {UserId}, booking {MaDangKy}", userId, maDangKy);
-   }
-         catch (Exception ex)
-     {
-       _logger.LogWarning(ex, "Failed to save completion notification for MaDangKy={MaDangKy}", maDangKy);
-            }
-
-        // Gửi email cảm ơn với thông tin chi tiết
-            try
-   {
-   var user = await _context.NguoiDungs.FindAsync(userId);
-    if (user != null && !string.IsNullOrWhiteSpace(user.Email))
-           {
-             var reviewLinkBase = reviewUrl;
-              var reviewLink = $"{reviewLinkBase}?maDangKy={maDangKy}&maPhong={booking.MaPhong}";
-
-     var body = $@"
- <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
-   <div style='text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; color: white; margin-bottom: 30px;'>
-            <h1 style='margin: 0; font-size: 28px;'>✅ Trả phòng thành công!</h1>
-       <p style='margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;'>HUIT Library</p>
-        </div>
-            
-            <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #28a745; margin-bottom: 25px;'>
-                <p style='margin: 0 0 10px 0;'>Xin chào <strong>{System.Net.WebUtility.HtmlEncode(user.HoTen ?? "")}</strong>,</p>
-   <p style='margin: 0; color: #28a745; font-weight: 600;'>Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)</p>
-    {(isEarlyReturn ? $"<p style='margin: 5px 0 0 0; color: #17a2b8;'>🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!</p>" : "")}
-            </div>
-
-  <div style='background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; margin-bottom: 25px;'>
-        <h3 style='color: #495057; margin: 0 0 15px 0; border-bottom: 2px solid #e9ecef; padding-bottom: 10px;'>📊 Thông tin chi tiết</h3>
-   <table style='width: 100%; border-collapse: collapse;'>
-  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Mã đăng ký:</strong></td><td style='padding: 8px 0;'>#{maDangKy}</td></tr>
-         <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Phòng:</strong></td><td style='padding: 8px 0;'>{booking.MaPhongNavigation?.TenPhong ?? "Chưa xác định"}</td></tr>
-      <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian đặt:</strong></td><td style='padding: 8px 0;'>{booking.ThoiGianBatDau:HH:mm dd/MM/yyyy} - {booking.ThoiGianKetThuc:HH:mm dd/MM/yyyy}</td></tr>
-          <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian thực tế:</strong></td><td style='padding: 8px 0;'>{actualStartTime:HH:mm dd/MM/yyyy} - {now:HH:mm dd/MM/yyyy}</td></tr>
-        <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian sử dụng:</strong></td><td style='padding: 8px 0;'>{usageDuration.TotalMinutes:0} phút</td></tr>
-  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Tình trạng phòng:</strong></td><td style='padding: 8px 0; color: #28a745;'>✅ {usage.TinhTrangPhong}</td></tr>
-     </table>
-  </div>
-   
-            <div style='text-align: center; background: #fff3cd; padding: 20px; border-radius: 8px; border: 1px solid #ffeaa7; margin-bottom: 25px;'>
-           <h3 style='color: #856404; margin: 0 0 15px 0;'>🌟 Đánh giá trải nghiệm của bạn</h3>
-       <p style='color: #856404; margin: 0 0 20px 0;'>Ý kiến của bạn giúp chúng tôi cải thiện chất lượng dịch vụ!</p>
-           
-                <div style='display: inline-block;'>
-          <a href='{reviewLink}&type=room' style='display: inline-block; background: #28a745; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-   📍 Đánh giá phòng
-    </a>
-           <a href='{reviewLink}&type=service' style='display: inline-block; background: #17a2b8; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-   🛎️ Đánh giá dịch vụ  
-            </a>
-   <a href='{reviewLink}&type=staff' style='display: inline-block; background: #ffc107; color: #212529; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-        👥 Đánh giá nhân viên
-           </a>
- </div>
-            </div>
-   
-       <div style='text-align: center; color: #6c757d; padding: 20px; border-top: 1px solid #e9ecef;'>
-             <p style='margin: 0 0 5px 0; font-style: italic;'>Cảm ơn bạn đã tin tướng và sử dụng dịch vụ của chúng tôi!</p>
-             <p style='margin: 0; font-weight: 600; color: #495057;'>📚 HUIT Library Team</p>
-    </div>
-        </div>";
-
-               await SendEmailAsync(user.Email, "✅ Trả phòng thành công - Cảm ơn bạn!", body);
-           _logger.LogInformation("Sent completion email to user {UserId} at {Email}", userId, user.Email);
-     }
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("Created completion notification for user {UserId}, booking {MaDangKy}", userId, maDangKy);
             }
             catch (Exception ex)
-        {
-          _logger.LogWarning(ex, "Failed to send completion email for MaDangKy={MaDangKy}", maDangKy);
-       }
+            {
+                _logger.LogWarning(ex, "Failed to save completion notification for MaDangKy={MaDangKy}", maDangKy);
+            }
 
-        // Tạo response message chi tiết
-    var responseMessage = $"✅ Trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)!\n" +
-           $"📊 Thời gian sử dụng: {usageDuration.TotalMinutes:0} phút\n" +
-     $"🏠 Tình trạng phòng: {usage.TinhTrangPhong}\n";
-         
-        if (isEarlyReturn)
-        responseMessage += $"🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!";
-      else
+            // Gửi email cảm ơn với thông tin chi tiết
+            try
+            {
+                var user = await _context.NguoiDungs.FindAsync(userId);
+                if (user != null && !string.IsNullOrWhiteSpace(user.Email))
+                {
+                    var reviewLinkBase = reviewUrl;
+                    var reviewLink = $"{reviewLinkBase}?maDangKy={maDangKy}&maPhong={booking.MaPhong}";
+
+                    var body = $@"
+             <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;'>
+               <div style='text-align: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; color: white; margin-bottom: 30px;'>
+                        <h1 style='margin: 0; font-size: 28px;'>✅ Trả phòng thành công!</h1>
+                   <p style='margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;'>HUIT Library</p>
+                    </div>
+            
+                        <div style='background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #28a745; margin-bottom: 25px;'>
+                            <p style='margin: 0 0 10px 0;'>Xin chào <strong>{System.Net.WebUtility.HtmlEncode(user.HoTen ?? "")}</strong>,</p>
+               <p style='margin: 0; color: #28a745; font-weight: 600;'>Bạn đã trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)</p>
+                {(isEarlyReturn ? $"<p style='margin: 5px 0 0 0; color: #17a2b8;'>🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!</p>" : "")}
+                        </div>
+
+              <div style='background: white; border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; margin-bottom: 25px;'>
+                    <h3 style='color: #495057; margin: 0 0 15px 0; border-bottom: 2px solid #e9ecef; padding-bottom: 10px;'>📊 Thông tin chi tiết</h3>
+               <table style='width: 100%; border-collapse: collapse;'>
+              <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Mã đăng ký:</strong></td><td style='padding: 8px 0;'>#{maDangKy}</td></tr>
+                     <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Phòng:</strong></td><td style='padding: 8px 0;'>{booking.MaPhongNavigation?.TenPhong ?? "Chưa xác định"}</td></tr>
+                  <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian đặt:</strong></td><td style='padding: 8px 0;'>{booking.ThoiGianBatDau:HH:mm dd/MM/yyyy} - {booking.ThoiGianKetThuc:HH:mm dd/MM/yyyy}</td></tr>
+                      <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian thực tế:</strong></td><td style='padding: 8px 0;'>{actualStartTime:HH:mm dd/MM/yyyy} - {now:HH:mm dd/MM/yyyy}</td></tr>
+                    <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Thời gian sử dụng:</strong></td><td style='padding: 8px 0;'>{usageDuration.TotalMinutes:0} phút</td></tr>
+              <tr><td style='padding: 8px 0; color: #6c757d;'><strong>Tình trạng phòng:</strong></td><td style='padding: 8px 0; color: #28a745;'>✅ {usage.TinhTrangPhong}</td></tr>
+                 </table>
+              </div>
+   
+                        <div style='text-align: center; background: #fff3cd; padding: 20px; border-radius: 8px; border: 1px solid #ffeaa7; margin-bottom: 25px;'>
+                       <h3 style='color: #856404; margin: 0 0 15px 0;'>🌟 Đánh giá trải nghiệm của bạn</h3>
+                   <p style='color: #856404; margin: 0 0 20px 0;'>Ý kiến của bạn giúp chúng tôi cải thiện chất lượng dịch vụ!</p>
+           
+                            <div style='display: inline-block;'>
+                      <a href='{reviewLink}&type=room' style='display: inline-block; background: #28a745; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+               📍 Đánh giá phòng
+                </a>
+                       <a href='{reviewLink}&type=service' style='display: inline-block; background: #17a2b8; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+               🛎️ Đánh giá dịch vụ  
+                        </a>
+               <a href='{reviewLink}&type=staff' style='display: inline-block; background: #ffc107; color: #212529; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
+                    👥 Đánh giá nhân viên
+
+                       </a>
+             </div>
+                        </div>
+   
+                   <div style='text-align: center; color: #6c757d; padding: 20px; border-top: 1px solid #e9ecef;'>
+                         <p style='margin: 0 0 5px 0; font-style: italic;'>Cảm ơn bạn đã tin tướng và sử dụng dịch vụ của chúng tôi!</p>
+                         <p style='margin: 0; font-weight: 600; color: #495057;'>📚 HUIT Library Team</p>
+                </div>
+                    </div>";
+
+                    await SendEmailAsync(user.Email, "✅ Trả phòng thành công - Cảm ơn bạn!", body);
+                    _logger.LogInformation("Sent completion email to user {UserId} at {Email}", userId, user.Email);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send completion email for MaDangKy={MaDangKy}", maDangKy);
+            }
+
+            // Tạo response message chi tiết
+            var responseMessage = $"✅ Trả phòng thành công lúc {now:HH:mm dd/MM/yyyy} (Giờ Việt Nam)!\n" +
+                   $"📊 Thời gian sử dụng: {usageDuration.TotalMinutes:0} phút\n" +
+             $"🏠 Tình trạng phòng: {usage.TinhTrangPhong}\n";
+
+            if (isEarlyReturn)
+                responseMessage += $"🎉 Cảm ơn bạn đã trả phòng sớm {(booking.ThoiGianKetThuc - now).TotalMinutes:0} phút!";
+            else
                 responseMessage += "⏰ Cảm ơn bạn đã sử dụng đúng thời gian!";
-        
-  return (true, responseMessage);
+
+            return (true, responseMessage);
         }
 
         private async Task SendEmailAsync(string toEmail, string subject, string body)
@@ -549,7 +572,7 @@ maDangKy, userId, now);
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
-                            where dk.MaNguoiDung == userId && (dk.MaTrangThai ==4 || dk.MaTrangThai ==5 || dk.MaTrangThai ==6)
+                            where dk.MaNguoiDung == userId && (dk.MaTrangThai == 4 || dk.MaTrangThai == 5 || dk.MaTrangThai == 6)
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
                             {
@@ -590,101 +613,107 @@ maDangKy, userId, now);
                 return new List<BookingHistoryDto>();
             }
         }
-        
+
         public async Task<List<CurrentBookingDto>> GetCurrentBookingsAsync(int userId)
         {
             try
- {
- _logger.LogInformation("Getting current bookings for user {UserId}", userId);
+            {
+                _logger.LogInformation("Getting current bookings for user {UserId}", userId);
 
- var now = GetVietnamTime();
+                var nowVn = GetVietnamTime();
+                var nowUtc = DateTime.UtcNow;
 
- // Lấy các đăng ký hiện tại:
- // - luôn lấy các bản ghi đang sử dụng (DB_INUSE)
- // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED) chỉ khi chưa quá thời gian (ThoiGianKetThuc >= now)
- var query = from dk in _context.DangKyPhongs
- join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
- from p in phongGroup.DefaultIfEmpty()
- join loaiPhong in _context.LoaiPhongs on dk.MaLoaiPhong equals loaiPhong.MaLoaiPhong
- join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
- from tt in trangThaiGroup.DefaultIfEmpty()
- where dk.MaNguoiDung == userId && (
- dk.MaTrangThai == DB_INUSE ||
- ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) && dk.ThoiGianKetThuc >= now)
- )
- orderby dk.ThoiGianBatDau
- select new { dk, p, loaiPhong, tt };
+                // Lấy các đăng ký hiện tại:
+                // - luôn lấy các bản ghi đang sử dụng (DB_INUSE)
+                // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED) chỉ khi chưa quá thời gian (ThoiGianKetThuc >= nowUtc)
+                var query = from dk in _context.DangKyPhongs
+                            join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
+                            from p in phongGroup.DefaultIfEmpty()
+                            join loaiPhong in _context.LoaiPhongs on dk.MaLoaiPhong equals loaiPhong.MaLoaiPhong
+                            join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
+                            from tt in trangThaiGroup.DefaultIfEmpty()
+                            where dk.MaNguoiDung == userId && (
+                            dk.MaTrangThai == DB_INUSE ||
+                            ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) && dk.ThoiGianKetThuc >= nowUtc)
+                            )
+                            orderby dk.ThoiGianBatDau
+                            select new { dk, p, loaiPhong, tt };
 
- var bookings = await query.ToListAsync();
+                var bookings = await query.ToListAsync();
 
- var result = bookings.Select(item =>
- {
- var dk = item.dk;
- var p = item.p;
- var loaiPhong = item.loaiPhong;
- var tt = item.tt;
+                var result = bookings.Select(item =>
+                {
+                    var dk = item.dk;
+                    var p = item.p;
+                    var loaiPhong = item.loaiPhong;
+                    var tt = item.tt;
 
- // Map DB status to normalized status
- var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
+                    // Map DB status to normalized status
+                    var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
 
- // Tính toán thời gian
- var minutesUntilStart = (int)(dk.ThoiGianBatDau - now).TotalMinutes;
- var minutesRemaining = (int)(dk.ThoiGianKetThuc - now).TotalMinutes;
+                    // Convert DB times (assumed UTC) to Vietnam time for calculations and display
+                    var startVn = FromUtcToVietnam(dk.ThoiGianBatDau);
+                    var endVn = FromUtcToVietnam(dk.ThoiGianKetThuc);
 
- // Actions
- var canStart = normalizedStatus == BookingStatus.Approved && minutesUntilStart <=15 && minutesUntilStart >= -5;
- var canExtend = normalizedStatus == BookingStatus.InUse && minutesRemaining >15 && now >= dk.ThoiGianBatDau && now <= dk.ThoiGianKetThuc;
- var canComplete = normalizedStatus == BookingStatus.InUse;
+                    // Tính toán thời gian
+                    var minutesUntilStart = (int)(startVn - nowVn).TotalMinutes;
+                    var minutesRemaining = (int)(endVn - nowVn).TotalMinutes;
 
- // Status description based on normalized status
- string statusDescription = normalizedStatus switch
- {
- BookingStatus.Pending => minutesUntilStart >0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
- BookingStatus.Approved when minutesUntilStart >15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart -15} phút",
- BookingStatus.Approved when minutesUntilStart <=15 && minutesUntilStart >0 => "Đã duyệt - Có thể checkin ngay",
- BookingStatus.Approved when minutesUntilStart <=0 && minutesRemaining >0 => "Đã duyệt - Đã đến giờ, có thể checkin",
- BookingStatus.Approved when minutesRemaining <=0 => "Đã duyệt - Đã quá giờ",
- BookingStatus.InUse when minutesRemaining >0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
- BookingStatus.InUse when minutesRemaining <=0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
- _ => GetStatusName(normalizedStatus)
- };
+                    // Actions
+                    var canStart = normalizedStatus == BookingStatus.Approved && minutesUntilStart <= 15 && minutesUntilStart >= -5;
+                    var canExtend = normalizedStatus == BookingStatus.InUse && minutesRemaining > 15 && nowVn >= startVn && nowVn <= endVn;
+                    var canComplete = normalizedStatus == BookingStatus.InUse;
 
- return new CurrentBookingDto
- {
- MaDangKy = dk.MaDangKy,
- MaPhong = dk.MaPhong,
- TenPhong = p?.TenPhong ?? "Chưa phân phòng",
- TenLoaiPhong = loaiPhong?.TenLoaiPhong,
- ThoiGianBatDau = dk.ThoiGianBatDau,
- ThoiGianKetThuc = dk.ThoiGianKetThuc,
- LyDo = dk.LyDo,
- SoLuong = dk.SoLuong,
- GhiChu = dk.GhiChu,
- MaTrangThai = dk.MaTrangThai ??0,
- // Use normalized status name so UI consistent
- TenTrangThai = GetStatusName(normalizedStatus),
- NgayDuyet = dk.NgayDuyet,
- NgayMuon = dk.NgayMuon,
+                    // Status description based on normalized status
+                    string statusDescription = normalizedStatus switch
+                    {
+                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
+                        BookingStatus.Approved when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
+                        BookingStatus.Approved when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
+                        BookingStatus.Approved when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
+                        BookingStatus.Approved when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
+                        BookingStatus.InUse when minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
+                        BookingStatus.InUse when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
+                        _ => GetStatusName(normalizedStatus)
+                    };
 
- CanStart = canStart,
- CanExtend = canExtend,
- CanComplete = canComplete,
- StatusDescription = statusDescription,
- MinutesUntilStart = Math.Max(0, minutesUntilStart),
- MinutesRemaining = Math.Max(0, minutesRemaining)
- };
- }).ToList();
+                    return new CurrentBookingDto
+                    {
+                        MaDangKy = dk.MaDangKy,
+                        MaPhong = dk.MaPhong,
+                        TenPhong = p?.TenPhong ?? "Chưa phân phòng",
+                        TenLoaiPhong = loaiPhong?.TenLoaiPhong,
+                        ThoiGianBatDau = startVn,
+                        ThoiGianKetThuc = endVn,
+                        LyDo = dk.LyDo,
+                        SoLuong = dk.SoLuong,
+                        GhiChu = dk.GhiChu,
+                        MaTrangThai = dk.MaTrangThai ?? 0,
+                        // Use normalized status name so UI consistent
+                        TenTrangThai = GetStatusName(normalizedStatus),
+                        NgayDuyet = dk.NgayDuyet.HasValue ? FromUtcToVietnam(dk.NgayDuyet.Value) : (DateTime?)null,
+                        NgayMuon = dk.NgayMuon,
 
- _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
+                        CanStart = canStart,
+                        CanExtend = canExtend,
+                        CanComplete = canComplete,
+                        StatusDescription = statusDescription,
+                        MinutesUntilStart = Math.Max(0, minutesUntilStart),
+                        MinutesRemaining = Math.Max(0, minutesRemaining)
+                    };
+                }).ToList();
 
- return result;
- }
- catch (Exception ex)
- {
- _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
- return new List<CurrentBookingDto>();
- }
+                _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
+                return new List<CurrentBookingDto>();
+            }
         }
-    
+
+
     }
 }
