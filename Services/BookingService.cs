@@ -122,6 +122,28 @@ namespace HUIT_Library.Services
 
             var nowVn = GetVietnamTime(); // Giờ hiện tại ở VN
 
+            // Kiểm tra số biên bản vi phạm (ViPham) trong6 tháng gần nhất
+            try
+            {
+                var cutoff = nowVn.AddMonths(-6);
+                var violationCount = await (from v in _context.ViPhams
+                                            join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                            join dk in _context.DangKyPhongs on sd.MaDangKy equals dk.MaDangKy
+                                            where dk.MaNguoiDung == userId && v.NgayLap != null && v.NgayLap >= cutoff
+                                            select v).CountAsync();
+
+                if (violationCount >3)
+                {
+                    _logger.LogInformation("User {UserId} has {ViolationCount} violations in last6 months, rejecting booking.", userId, violationCount);
+                    return (false, $"Bạn có {violationCount} biên bản vi phạm trong6 tháng gần nhất. Không thể đăng ký.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to check recent violations for user {UserId}", userId);
+                // Nếu lỗi khi kiểm tra, không chặn đăng ký nhưng log để điều tra
+            }
+
             // Gán loại DateTime rõ ràng (local VN)
             var requestedStartVn = DateTime.SpecifyKind(request.ThoiGianBatDau, DateTimeKind.Unspecified);
 
