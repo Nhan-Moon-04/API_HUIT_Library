@@ -122,7 +122,7 @@ namespace HUIT_Library.Services
 
             var nowVn = GetVietnamTime(); // Giờ hiện tại ở VN
 
-            // Kiểm tra số biên bản vi phạm (ViPham) trong6 tháng gần nhất
+            // 2️⃣ Kiểm tra số biên bản vi phạm trong 6 tháng gần nhất
             try
             {
                 var cutoff = nowVn.AddMonths(-6);
@@ -132,38 +132,42 @@ namespace HUIT_Library.Services
                                             where dk.MaNguoiDung == userId && v.NgayLap != null && v.NgayLap >= cutoff
                                             select v).CountAsync();
 
-                if (violationCount >3)
+                if (violationCount > 3)
                 {
-                    _logger.LogInformation("User {UserId} has {ViolationCount} violations in last6 months, rejecting booking.", userId, violationCount);
-                    return (false, $"Bạn có {violationCount} biên bản vi phạm trong6 tháng gần nhất. Không thể đăng ký.");
+                    _logger.LogInformation("User {UserId} has {ViolationCount} violations in last 6 months, rejecting booking.", userId, violationCount);
+                    return (false, $"Bạn có {violationCount} biên bản vi phạm trong 6 tháng gần nhất. Không thể đăng ký.");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to check recent violations for user {UserId}", userId);
-                // Nếu lỗi khi kiểm tra, không chặn đăng ký nhưng log để điều tra
             }
 
-            // Gán loại DateTime rõ ràng (local VN)
-            var requestedStartVn = DateTime.SpecifyKind(request.ThoiGianBatDau, DateTimeKind.Unspecified);
+            // 3️⃣ Giữ nguyên giờ người dùng chọn (giờ Việt Nam), KHÔNG cộng/trừ UTC gì hết
+            var startForDb = new DateTime(
+                request.ThoiGianBatDau.Year,
+                request.ThoiGianBatDau.Month,
+                request.ThoiGianBatDau.Day,
+                request.ThoiGianBatDau.Hour,
+                request.ThoiGianBatDau.Minute,
+                request.ThoiGianBatDau.Second,
+                DateTimeKind.Unspecified
+            );
 
-            // Kiểm tra phải là thời gian trong tương lai
-            if (requestedStartVn < nowVn.AddMinutes(-5))
+            // 4️⃣ Kiểm tra phải là thời gian trong tương lai (so sánh bằng giờ VN)
+            if (startForDb < nowVn.AddMinutes(-5))
                 return (false, "Thời gian bắt đầu phải là hiện tại hoặc trong tương lai.");
 
-            // 👉 Không convert sang UTC nữa, vì store xử lý theo giờ VN
-            var startForDb = requestedStartVn;
-
-            // 2️⃣ Mở kết nối DB
+            // 5️⃣ Mở kết nối DB
             await using var conn = _context.Database.GetDbConnection();
             if (conn.State == ConnectionState.Closed)
                 await conn.OpenAsync();
 
-            // 3️⃣ Tham số cho sp_DangKyPhong
+            // 6️⃣ Chuẩn bị tham số cho stored procedure
             var parameters = new DynamicParameters();
             parameters.Add("@MaNguoiDung", userId, DbType.Int32);
             parameters.Add("@MaLoaiPhong", request.MaLoaiPhong, DbType.Int32);
-            parameters.Add("@ThoiGianBatDau", startForDb, DbType.DateTime); // ⚡ đã sửa
+            parameters.Add("@ThoiGianBatDau", startForDb, DbType.DateTime);
             parameters.Add("@LyDo", request.LyDo, DbType.String);
             parameters.Add("@SoLuong", request.SoLuong > 0 ? request.SoLuong : 1, DbType.Int32);
             parameters.Add("@GhiChu", request.GhiChu, DbType.String);
@@ -174,12 +178,11 @@ namespace HUIT_Library.Services
                     "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={StartForDb}",
                     userId, request.MaLoaiPhong, startForDb);
 
-                // 4️⃣ Gọi stored procedure
+                // 7️⃣ Gọi stored procedure
                 var rows = await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
-
                 _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
 
-                // 5️⃣ Nếu insert thành công
+                // 8️⃣ Nếu insert thành công
                 if (rows > 0)
                 {
                     try
@@ -204,7 +207,7 @@ namespace HUIT_Library.Services
                     return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
                 }
 
-                // 6️⃣ Nếu rows = 0, thử tìm bản ghi vừa thêm (SP chỉ PRINT)
+                // 9️⃣ Nếu rows = 0, thử tìm bản ghi vừa thêm
                 try
                 {
                     var endVn = startForDb.AddHours(2);
@@ -231,7 +234,7 @@ namespace HUIT_Library.Services
                     _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned 0 rows.");
                 }
 
-                // 7️⃣ Không có kết quả
+                // 🔟 Không có kết quả
                 return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ.");
             }
             catch (Exception ex)
@@ -240,6 +243,7 @@ namespace HUIT_Library.Services
                 return (false, $"Lỗi hệ thống khi gọi stored procedure: {ex.Message}");
             }
         }
+
 
 
 
@@ -644,11 +648,11 @@ namespace HUIT_Library.Services
                 _logger.LogInformation("Getting current bookings for user {UserId}", userId);
 
                 var nowVn = GetVietnamTime();
-                var nowUtc = DateTime.UtcNow;
 
                 // Lấy các đăng ký hiện tại:
                 // - luôn lấy các bản ghi đang sử dụng (DB_INUSE)
-                // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED) chỉ khi chưa quá thời gian (ThoiGianKetThuc >= nowUtc)
+                // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED)
+                //   chỉ khi chưa quá thời gian kết thúc
                 var query = from dk in _context.DangKyPhongs
                             join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
                             from p in phongGroup.DefaultIfEmpty()
@@ -656,8 +660,9 @@ namespace HUIT_Library.Services
                             join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             where dk.MaNguoiDung == userId && (
-                            dk.MaTrangThai == DB_INUSE ||
-                            ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) && dk.ThoiGianKetThuc >= nowUtc)
+                                dk.MaTrangThai == DB_INUSE ||
+                                ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) &&
+                                 dk.ThoiGianKetThuc >= nowVn)
                             )
                             orderby dk.ThoiGianBatDau
                             select new { dk, p, loaiPhong, tt };
@@ -671,23 +676,26 @@ namespace HUIT_Library.Services
                     var loaiPhong = item.loaiPhong;
                     var tt = item.tt;
 
-                    // Map DB status to normalized status
                     var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
 
-                    // Convert DB times (assumed UTC) to Vietnam time for calculations and display
-                    var startVn = FromUtcToVietnam(dk.ThoiGianBatDau);
-                    var endVn = FromUtcToVietnam(dk.ThoiGianKetThuc);
+                    // ❌ KHÔNG convert UTC → VN nữa
+                    var start = dk.ThoiGianBatDau;
+                    var end = dk.ThoiGianKetThuc;
 
                     // Tính toán thời gian
-                    var minutesUntilStart = (int)(startVn - nowVn).TotalMinutes;
-                    var minutesRemaining = (int)(endVn - nowVn).TotalMinutes;
+                    var minutesUntilStart = (int)(start - nowVn).TotalMinutes;
+                    var minutesRemaining = (int)(end - nowVn).TotalMinutes;
 
                     // Actions
-                    var canStart = normalizedStatus == BookingStatus.Approved && minutesUntilStart <= 15 && minutesUntilStart >= -5;
-                    var canExtend = normalizedStatus == BookingStatus.InUse && minutesRemaining > 15 && nowVn >= startVn && nowVn <= endVn;
+                    var canStart = normalizedStatus == BookingStatus.Approved &&
+                                   minutesUntilStart <= 15 && minutesUntilStart >= -5;
+
+                    var canExtend = normalizedStatus == BookingStatus.InUse &&
+                                    minutesRemaining > 15 && nowVn >= start && nowVn <= end;
+
                     var canComplete = normalizedStatus == BookingStatus.InUse;
 
-                    // Status description based on normalized status
+                    // Status description
                     string statusDescription = normalizedStatus switch
                     {
                         BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
@@ -706,15 +714,14 @@ namespace HUIT_Library.Services
                         MaPhong = dk.MaPhong,
                         TenPhong = p?.TenPhong ?? "Chưa phân phòng",
                         TenLoaiPhong = loaiPhong?.TenLoaiPhong,
-                        ThoiGianBatDau = startVn,
-                        ThoiGianKetThuc = endVn,
+                        ThoiGianBatDau = start,
+                        ThoiGianKetThuc = end,
                         LyDo = dk.LyDo,
                         SoLuong = dk.SoLuong,
                         GhiChu = dk.GhiChu,
                         MaTrangThai = dk.MaTrangThai ?? 0,
-                        // Use normalized status name so UI consistent
                         TenTrangThai = GetStatusName(normalizedStatus),
-                        NgayDuyet = dk.NgayDuyet.HasValue ? FromUtcToVietnam(dk.NgayDuyet.Value) : (DateTime?)null,
+                        NgayDuyet = dk.NgayDuyet,
                         NgayMuon = dk.NgayMuon,
 
                         CanStart = canStart,
@@ -727,7 +734,6 @@ namespace HUIT_Library.Services
                 }).ToList();
 
                 _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
-
                 return result;
             }
             catch (Exception ex)
@@ -736,6 +742,7 @@ namespace HUIT_Library.Services
                 return new List<CurrentBookingDto>();
             }
         }
+
 
     }
 }
