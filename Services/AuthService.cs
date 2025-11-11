@@ -331,7 +331,7 @@ namespace HUIT_Library.Services
             _context.PasswordResetTokens.Add(resetToken);
             await _context.SaveChangesAsync();
 
-            var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "https://1dx4jm3x-4200.asse.devtunnels.ms/reset-password";
+            var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "http://localhost:4200/reset-password";
             var resetLink = $"{frontendUrl}?token={token}";
             var body = $"<p>Nhấn vào link để đặt lại mật khẩu (hiệu lực trong 5 phút): <a href='{resetLink}'>Đặt lại ngay</a></p>";
 

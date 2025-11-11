@@ -10,7 +10,7 @@ using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Net.Mail;
 using System.Collections.Immutable;
-
+using System.Data.SqlClient;
 namespace HUIT_Library.Services
 {
     public class BookingService : IBookingService
@@ -53,20 +53,7 @@ namespace HUIT_Library.Services
         }
 
         // Map normalized BookingStatus back to DB value so updates write the correct legacy value
-        private int MapStatusToDb(BookingStatus status)
-        {
-            return status switch
-            {
-                BookingStatus.Pending => DB_PENDING,
-                BookingStatus.Approved => DB_APPROVED,
-                BookingStatus.InUse => DB_INUSE,
-                BookingStatus.Rejected => DB_REJECTED,
-                BookingStatus.Cancelled => DB_CANCELLED,
-                BookingStatus.Used => DB_USED,
-                _ => DB_PENDING
-            };
-        }
-
+  
         private string GetStatusName(BookingStatus status)
         {
             return status switch
@@ -96,157 +83,142 @@ namespace HUIT_Library.Services
         }
 
         // Convert a DateTime that is provided in Vietnam local time (no offset) to UTC for storage
-        private DateTime ToUtcFromVietnam(DateTime vietnamLocal)
+     
+
+        public async Task<(bool Success, string Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
         {
-            var v = DateTime.SpecifyKind(vietnamLocal, DateTimeKind.Unspecified);
-            var offset = VietnamTimeZone.GetUtcOffset(v);
-            var dto = new DateTimeOffset(v, offset);
-            return dto.UtcDateTime;
-        }
-
-        // Convert a UTC DateTime (from DB) to Vietnam local time for display
-        private DateTime FromUtcToVietnam(DateTime utc)
-        {
-            var asUtc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
-            return TimeZoneInfo.ConvertTimeFromUtc(asUtc, VietnamTimeZone);
-        }
-
-        public async Task<(bool Success, string? Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
-        {
-            // 1️⃣ Kiểm tra dữ liệu đầu vào
-            if (request.MaLoaiPhong <= 0)
-                return (false, "Mã loại phòng không hợp lệ.");
-
-            if (request.ThoiGianBatDau == default)
-                return (false, "Thời gian bắt đầu không hợp lệ.");
-
-            var nowVn = GetVietnamTime(); // Giờ hiện tại ở VN
-
-            // 2️⃣ Kiểm tra số biên bản vi phạm trong 6 tháng gần nhất
             try
             {
+                // 1️⃣ Kiểm tra dữ liệu đầu vào
+                if (request.MaLoaiPhong <= 0)
+                    return (false, "Vui lòng chọn loại phòng hợp lệ.");
+
+                if (request.ThoiGianBatDau == default)
+                    return (false, "Vui lòng chọn thời gian bắt đầu.");
+
+                var nowVn = GetVietnamTime();
+
+                // 2️⃣ Kiểm tra vi phạm gần đây
                 var cutoff = nowVn.AddMonths(-6);
                 var violationCount = await (from v in _context.ViPhams
                                             join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
                                             join dk in _context.DangKyPhongs on sd.MaDangKy equals dk.MaDangKy
-                                            where dk.MaNguoiDung == userId && v.NgayLap != null && v.NgayLap >= cutoff
+                                            where dk.MaNguoiDung == userId && v.NgayLap >= cutoff
                                             select v).CountAsync();
 
                 if (violationCount > 3)
-                {
-                    _logger.LogInformation("User {UserId} has {ViolationCount} violations in last 6 months, rejecting booking.", userId, violationCount);
-                    return (false, $"Bạn có {violationCount} biên bản vi phạm trong 6 tháng gần nhất. Không thể đăng ký.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to check recent violations for user {UserId}", userId);
-            }
+                    return (false, $"Bạn có {violationCount} biên bản vi phạm trong 6 tháng gần nhất, nên tạm thời không thể đăng ký.");
 
-            // 3️⃣ Giữ nguyên giờ người dùng chọn (giờ Việt Nam), KHÔNG cộng/trừ UTC gì hết
-            var startForDb = new DateTime(
-                request.ThoiGianBatDau.Year,
-                request.ThoiGianBatDau.Month,
-                request.ThoiGianBatDau.Day,
-                request.ThoiGianBatDau.Hour,
-                request.ThoiGianBatDau.Minute,
-                request.ThoiGianBatDau.Second,
-                DateTimeKind.Unspecified
+                // 3️⃣ Chuẩn bị dữ liệu cho DB
+                var startForDb = new DateTime(
+                    request.ThoiGianBatDau.Year,
+           request.ThoiGianBatDau.Month,
+                    request.ThoiGianBatDau.Day,
+               request.ThoiGianBatDau.Hour,
+                    request.ThoiGianBatDau.Minute,
+           request.ThoiGianBatDau.Second,
+              DateTimeKind.Unspecified
             );
 
-            // 4️⃣ Kiểm tra phải là thời gian trong tương lai (so sánh bằng giờ VN)
-            if (startForDb < nowVn.AddMinutes(-5))
-                return (false, "Thời gian bắt đầu phải là hiện tại hoặc trong tương lai.");
+                var parameters = new DynamicParameters();
+                parameters.Add("@MaNguoiDung", userId);
+                parameters.Add("@MaLoaiPhong", request.MaLoaiPhong);
+                parameters.Add("@ThoiGianBatDau", startForDb);
+                parameters.Add("@LyDo", request.LyDo ?? "");
+                parameters.Add("@SoLuong", request.SoLuong <= 0 ? 1 : request.SoLuong);
+                parameters.Add("@GhiChu", request.GhiChu ?? "");
 
-            // 5️⃣ Mở kết nối DB
-            await using var conn = _context.Database.GetDbConnection();
-            if (conn.State == ConnectionState.Closed)
-                await conn.OpenAsync();
+                // Add output parameters
+                parameters.Add("@ResultCode", dbType: DbType.Int32, direction: ParameterDirection.Output);
+                parameters.Add("@ResultMessage", dbType: DbType.String, size: 255, direction: ParameterDirection.Output);
 
-            // 6️⃣ Chuẩn bị tham số cho stored procedure
-            var parameters = new DynamicParameters();
-            parameters.Add("@MaNguoiDung", userId, DbType.Int32);
-            parameters.Add("@MaLoaiPhong", request.MaLoaiPhong, DbType.Int32);
-            parameters.Add("@ThoiGianBatDau", startForDb, DbType.DateTime);
-            parameters.Add("@LyDo", request.LyDo, DbType.String);
-            parameters.Add("@SoLuong", request.SoLuong > 0 ? request.SoLuong : 1, DbType.Int32);
-            parameters.Add("@GhiChu", request.GhiChu, DbType.String);
+                // 4️⃣ Gọi stored procedure
+                await using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
 
-            try
-            {
-                _logger.LogInformation(
-                    "Calling sp_DangKyPhong: MaNguoiDung={UserId}, MaLoaiPhong={MaLoaiPhong}, ThoiGianBatDau={StartForDb}",
-                    userId, request.MaLoaiPhong, startForDb);
+                await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
 
-                // 7️⃣ Gọi stored procedure
-                var rows = await conn.ExecuteAsync("dbo.sp_DangKyPhong", parameters, commandType: CommandType.StoredProcedure);
-                _logger.LogInformation("sp_DangKyPhong returned rowsAffected={Rows}", rows);
+                // 5️⃣ Lấy kết quả từ output parameters
+                var resultCode = parameters.Get<int>("@ResultCode");
+                var resultMessage = parameters.Get<string>("@ResultMessage") ?? "Không có thông báo từ hệ thống";
 
-                // 8️⃣ Nếu insert thành công
-                if (rows > 0)
+                if (resultCode == 0)
                 {
-                    try
-                    {
-                        var endVn = startForDb.AddHours(2);
-
-                        var inserted = await _context.DangKyPhongs
-                            .Where(d => d.MaNguoiDung == userId &&
-                                        d.ThoiGianBatDau == startForDb &&
-                                        d.ThoiGianKetThuc == endVn)
-                            .OrderByDescending(d => d.MaDangKy)
-                            .FirstOrDefaultAsync();
-
-                        if (inserted != null)
-                            await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to create notification after successful sp_DangKyPhong (rows>0).");
-                    }
-
-                    return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
-                }
-
-                // 9️⃣ Nếu rows = 0, thử tìm bản ghi vừa thêm
-                try
-                {
+                    // Thành công - tìm bản ghi vừa insert để tạo thông báo
                     var endVn = startForDb.AddHours(2);
-
                     var inserted = await _context.DangKyPhongs
-                        .Where(d => d.MaNguoiDung == userId &&
-                                    d.ThoiGianBatDau == startForDb &&
-                                    d.ThoiGianKetThuc == endVn)
-                        .OrderByDescending(d => d.MaDangKy)
-                        .FirstOrDefaultAsync();
+              .Where(d => d.MaNguoiDung == userId &&
+                   d.ThoiGianBatDau == startForDb &&
+                 d.ThoiGianKetThuc == endVn)
+                          .OrderByDescending(d => d.MaDangKy)
+                   .FirstOrDefaultAsync();
 
                     if (inserted != null)
-                    {
-                        _logger.LogInformation(
-                            "Detected inserted DangKyPhong (MaDangKy={MaDangKy}) despite sp returning 0 rows.",
-                            inserted.MaDangKy);
-
                         await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
-                        return (true, "Yêu cầu mượn phòng đã được gửi, vui lòng chờ duyệt.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Error while verifying inserted record after sp_DangKyPhong returned 0 rows.");
-                }
 
-                // 🔟 Không có kết quả
-                return (false, "Không thể đăng ký phòng: có thể không có phòng trống hoặc dữ liệu không hợp lệ.");
+                    _logger.LogInformation("Successfully created booking for user {UserId}, booking ID {BookingId}",
+                             userId, inserted?.MaDangKy);
+
+                    return (true, $"{resultMessage}");
+                }
+                else
+                {
+                    // Thất bại - log chi tiết và trả về thông báo thân thiện
+                    _logger.LogWarning("Booking creation failed for user {UserId}. Code: {ResultCode}, Message: {ResultMessage}",
+                        userId, resultCode, resultMessage);
+
+                    return (false, $"{resultMessage}");
+                }
+            }
+            catch (SqlException ex)
+            {
+                // Log chi tiết cho developer
+                _logger.LogError(ex, "SQL error while calling sp_DangKyPhong for user {UserId}. " +
+            "Error Number: {ErrorNumber}, Severity: {Severity}, State: {State}",
+                    userId, ex.Number, ex.Class, ex.State);
+
+                // Trả về thông báo thân thiện dựa trên loại lỗi SQL
+                var userMessage = ex.Number switch
+                {
+                    2 => "Không thể kết nối đến cơ sở dữ liệu. Vui lòng thử lại sau.",
+                    547 => "Dữ liệu không hợp lệ. Vui lòng kiểm tra thông tin đăng ký.",
+                    2627 or 2601 => "Bạn đã có đăng ký trùng lặp cho thời gian này.",
+                    -2 => "Hệ thống đang quá tải. Vui lòng thử lại sau ít phút.",
+                    18456 => "Lỗi xác thực. Vui lòng đăng nhập lại.",
+                    _ when ex.Message.Contains("timeout") => "Hệ thống đang bận. Vui lòng thử lại sau.",
+                    _ when ex.Message.Contains("deadlock") => "Có xung đột dữ liệu. Vui lòng thử lại.",
+                    _ => "Có lỗi xảy ra khi xử lý yêu cầu. Vui lòng thử lại hoặc liên hệ bộ phận hỗ trợ."
+                };
+
+                return (false, userMessage);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogError(ex, "Database connection error while creating booking for user {UserId}", userId);
+                return (false, "Không thể kết nối đến hệ thống. Vui lòng thử lại sau.");
+            }
+            catch (TimeoutException ex)
+            {
+                _logger.LogError(ex, "Timeout error while creating booking for user {UserId}", userId);
+                return (false, "Hệ thống đang quá tải. Vui lòng thử lại sau ít phút.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error while calling sp_DangKyPhong for MaNguoiDung={UserId}", userId);
-                return (false, $"Lỗi hệ thống khi gọi stored procedure: {ex.Message}");
+                // Log đầy đủ chi tiết cho developer
+                _logger.LogError(ex, "Unexpected error while creating booking for user {UserId}. " +
+                    "Request: {@BookingRequest}", userId, new
+                    {
+                        request.MaLoaiPhong,
+                        request.ThoiGianBatDau,
+                        request.SoLuong,
+                        LyDoLength = request.LyDo?.Length ?? 0,
+                        GhiChuLength = request.GhiChu?.Length ?? 0
+                    });
+
+                // Trả về thông báo thân thiện cho người dùng
+                return (false, "Đã xảy ra lỗi không mong muốn. Vui lòng thử lại sau hoặc liên hệ bộ phận hỗ trợ.");
             }
         }
-
-
-
-
 
         private async Task CreateNotificationForBookingAsync(int userId, CreateBookingRequest request, int? maDangKy)
         {
