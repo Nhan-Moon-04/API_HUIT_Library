@@ -26,6 +26,11 @@ namespace HUIT_Library.Services.BookingServices
         /// <summary>
         /// Hủy đặt phòng
         /// </summary>
-     Task<(bool Success, string? Message)> CancelBookingAsync(int userId, int maDangKy);
+     Task<(bool Success, string? Message)> CancelBookingAsync(int userId, CancelBookingRequest request);
+
+        /// <summary>
+        /// Hủy đặt phòng (phiên bản cũ - deprecated, dùng cho backward compatibility)
+        /// </summary>
+        Task<(bool Success, string? Message)> CancelBookingAsync(int userId, int maDangKy);
     }
 }

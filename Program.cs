@@ -34,6 +34,8 @@ builder.Services.AddScoped<IBookingManagementService, BookingManagementService>(
 builder.Services.AddScoped<IBookingViewService, BookingViewService>();
 builder.Services.AddScoped<IViolationService, ViolationService>();
 builder.Services.AddScoped<IRoomUsageService, RoomUsageService>();
+builder.Services.AddScoped<IRoomService, RoomService>(); // Register Room service
+builder.Services.AddScoped<IAvailableRoomService, AvailableRoomService>(); // ✅ Add available room search service
 
 // Register notification service
 builder.Services.AddScoped<INotificationService, NotificationService>();

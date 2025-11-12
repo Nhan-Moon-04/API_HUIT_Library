@@ -331,11 +331,17 @@ namespace HUIT_Library.Services.BookingServices
             }
         }
 
-        public async Task<(bool Success, string? Message)> CancelBookingAsync(int userId, int maDangKy)
+        public async Task<(bool Success, string? Message)> CancelBookingAsync(int userId, CancelBookingRequest request)
         {
             try
             {
-                var booking = await _context.DangKyPhongs.FindAsync(maDangKy);
+                // Kiểm tra dữ liệu đầu vào
+                if (string.IsNullOrWhiteSpace(request.LyDoHuy))
+                {
+                    return (false, "Vui lòng nhập lý do hủy đăng ký.");
+                }
+
+                var booking = await _context.DangKyPhongs.FindAsync(request.MaDangKy);
                 if (booking == null)
                     return (false, "Đăng ký không tồn tại.");
 
@@ -362,17 +368,93 @@ namespace HUIT_Library.Services.BookingServices
                 if (booking.ThoiGianBatDau <= now.AddMinutes(30))
                     return (false, "Không thể hủy đăng ký trong vòng 30 phút trước giờ bắt đầu.");
 
-                // Cập nhật trạng thái thành hủy (5)
+                // Cập nhật trạng thái thành hủy (5) và lưu lý do hủy
                 booking.MaTrangThai = 5;
+
+                // Lưu lý do hủy vào cột GhiChu
+                var lyDoHuyFull = $"[HỦY] {request.LyDoHuy}";
+                if (!string.IsNullOrWhiteSpace(request.GhiChu))
+                {
+                    lyDoHuyFull += $" - Ghi chú: {request.GhiChu}";
+                }
+
+                // Cập nhật ghi chú với lý do hủy
+                if (string.IsNullOrWhiteSpace(booking.GhiChu))
+                {
+                    booking.GhiChu = lyDoHuyFull;
+                }
+                else
+                {
+                    booking.GhiChu += " | " + lyDoHuyFull;
+                }
+
                 await _context.SaveChangesAsync();
 
-                _logger.LogInformation("Successfully cancelled booking {MaDangKy} for user {UserId}", maDangKy, userId);
-                return (true, "Hủy đăng ký thành công.");
+                // Tạo thông báo về việc hủy đăng ký
+                await CreateCancelNotificationAsync(userId, request, booking);
+
+                _logger.LogInformation("Successfully cancelled booking {MaDangKy} for user {UserId} with reason: {Reason}",
+                       request.MaDangKy, userId, request.LyDoHuy);
+
+                return (true, $"Hủy đăng ký thành công. Lý do: {request.LyDoHuy}");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error cancelling booking {MaDangKy} for user {UserId}", maDangKy, userId);
+                _logger.LogError(ex, "Error cancelling booking {MaDangKy} for user {UserId}", request.MaDangKy, userId);
                 return (false, "Lỗi hệ thống khi hủy đăng ký. Vui lòng thử lại.");
+            }
+        }
+
+        /// <summary>
+        /// Hủy đặt phòng (phiên bản cũ - deprecated, dùng cho backward compatibility)
+        /// </summary>
+        public async Task<(bool Success, string? Message)> CancelBookingAsync(int userId, int maDangKy)
+        {
+         // Sử dụng phiên bản mới với lý do mặc định
+            var request = new CancelBookingRequest
+    {
+  MaDangKy = maDangKy,
+         LyDoHuy = "Người dùng hủy đăng ký", // Lý do mặc định
+                GhiChu = "Hủy qua API cũ (không có lý do cụ thể)"
+    };
+
+          return await CancelBookingAsync(userId, request);
+        }
+
+        private async Task CreateCancelNotificationAsync(int userId, CancelBookingRequest request, DangKyPhong booking)
+        {
+            try
+            {
+                var title = "🚫 Đăng ký phòng đã được hủy";
+                var content = $"Đăng ký phòng từ {booking.ThoiGianBatDau:dd/MM/yyyy HH:mm} đến {booking.ThoiGianKetThuc:dd/MM/yyyy HH:mm} đã được hủy.\n" +
+      $"Lý do hủy: {request.LyDoHuy}";
+
+                if (!string.IsNullOrWhiteSpace(request.GhiChu))
+                {
+                    content += $"\nGhi chú: {request.GhiChu}";
+                }
+
+                content += $"\nMã đăng ký: #{request.MaDangKy}";
+
+                var thongBao = new ThongBao
+                {
+                    MaNguoiDung = userId,
+                    TieuDe = title,
+                    NoiDung = content,
+                    NgayTao = GetVietnamTime(),
+                    DaDoc = false
+                };
+
+                _context.ThongBaos.Add(thongBao);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Created cancellation notification for user {UserId}, booking {MaDangKy}",
+         userId, request.MaDangKy);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to create cancellation notification for booking {MaDangKy}",
+        request.MaDangKy);
             }
         }
     }
