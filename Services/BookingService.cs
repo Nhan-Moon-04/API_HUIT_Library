@@ -571,7 +571,7 @@ namespace HUIT_Library.Services
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
-                            where dk.MaNguoiDung == userId && (dk.MaTrangThai == 4 || dk.MaTrangThai == 5 || dk.MaTrangThai == 6)
+                            where dk.MaNguoiDung == userId && (dk.MaTrangThai == 3 || dk.MaTrangThai == 5 || dk.MaTrangThai == 6)
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
                             {

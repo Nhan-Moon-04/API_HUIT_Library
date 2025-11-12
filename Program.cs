@@ -1,6 +1,7 @@
 ﻿using HUIT_Library.Models;
 using HUIT_Library.Services;
 using HUIT_Library.Services.IServices;
+using HUIT_Library.Services.BookingServices; // Add this import
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -24,7 +25,16 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IPasswordHashService, PasswordHashService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<ILoaiPhongServices, LoaiPhongServices>();
+
+// Register the old BookingService for backward compatibility
 builder.Services.AddScoped<IBookingService, BookingService>();
+
+// Register new modular booking services
+builder.Services.AddScoped<IBookingManagementService, BookingManagementService>();
+builder.Services.AddScoped<IBookingViewService, BookingViewService>();
+builder.Services.AddScoped<IViolationService, ViolationService>();
+builder.Services.AddScoped<IRoomUsageService, RoomUsageService>();
+
 // Register notification service
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IChatService, ChatService>();
