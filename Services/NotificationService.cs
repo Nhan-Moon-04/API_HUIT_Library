@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using HUIT_Library.DTOs.DTO;
 using HUIT_Library.Models;
 using HUIT_Library.Services.IServices;
@@ -30,10 +30,10 @@ ORDER BY NgayTao DESC";
             return items;
         }
 
-        public async Task<NotificationDetailsDto?> GetNotificationDetailsAsync(int userId, int notificationId)
+        public async Task<NotificationDetailsDto?> GetNotificationDetailsAsync(int notificationId)
         {
-            // Ensure the notification belongs to the user
-            var notification = await _context.ThongBaos.FirstOrDefaultAsync(t => t.MaThongBao == notificationId && t.MaNguoiDung == userId);
+            // Lấy notification theo ID
+            var notification = await _context.ThongBaos.FirstOrDefaultAsync(t => t.MaThongBao == notificationId);
             if (notification == null)
                 return null;
 
@@ -48,7 +48,7 @@ ORDER BY NgayTao DESC";
                 GhiChu = null
             };
 
-            // If not yet marked as read, update DaDoc = true
+            // Nếu chưa đọc thì đánh dấu đã đọc
             if (notification.DaDoc != true)
             {
                 notification.DaDoc = true;
@@ -64,6 +64,17 @@ ORDER BY NgayTao DESC";
             }
 
             return dto;
+        }
+
+        public async Task<int> CountNotificationsAsync(int userId)
+        {
+            using var conn = _context.Database.GetDbConnection();
+            if (conn.State == System.Data.ConnectionState.Closed)
+                await conn.OpenAsync();
+
+            var sql = "SELECT COUNT(*) FROM ThongBao WHERE MaNguoiDung = @userId AND ISNULL(DaDoc, 0) = 0";
+            var count = await conn.QuerySingleAsync<int>(sql, new { userId });
+            return count;
         }
     }
 }

@@ -7,7 +7,7 @@ namespace HUIT_Library.Services.IServices
     public interface INotificationService
     {
         Task<IEnumerable<NotificationDto>> GetNotificationsForUserAsync(int userId);
-        Task<NotificationDetailsDto?> GetNotificationDetailsAsync(int userId, int notificationId);
- 
+        Task<NotificationDetailsDto?> GetNotificationDetailsAsync(int notificationId);
+        Task<int> CountNotificationsAsync(int userId);
     }
 }

@@ -42,6 +42,7 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IChatService, ChatService>();
 // Register BotpressService as a scoped service (BotpressService does not currently accept HttpClient)
 builder.Services.AddScoped<IBotpressService, BotpressService>();
+builder.Services.AddScoped<INotification, HUIT_Library.Services.Notification.NotificationServices>(); // Register NotificationServices
 
 // Configure JWT authentication
 var jwtKey = builder.Configuration.GetValue<string>("Jwt:Key") ?? "P6n@8X9z#A1k$F3q*L7v!R2y^C5m&E0w";
