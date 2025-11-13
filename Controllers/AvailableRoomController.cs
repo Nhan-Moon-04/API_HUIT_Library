@@ -1,223 +1,140 @@
-using HUIT_Library.DTOs.DTO;
+﻿using HUIT_Library.DTOs.DTO;
 using HUIT_Library.DTOs.Request;
 using HUIT_Library.Services.IServices;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 
 namespace HUIT_Library.Controllers
 {
-  /// <summary>
-    /// API Controller cho t�m ki?m ph�ng tr?ng
+    /// <summary>
+    /// API Controller đơn giản cho tìm kiếm phòng trống (dành cho người dùng web)
     /// </summary>
- [ApiController]
+    [ApiController]
     [Route("api/[controller]")]
     public class AvailableRoomController : ControllerBase
     {
-private readonly IAvailableRoomService _availableRoomService;
+        private readonly IAvailableRoomService _availableRoomService;
         private readonly ILogger<AvailableRoomController> _logger;
 
-      public AvailableRoomController(IAvailableRoomService availableRoomService, ILogger<AvailableRoomController> logger)
+        public AvailableRoomController(IAvailableRoomService availableRoomService, ILogger<AvailableRoomController> logger)
         {
-    _availableRoomService = availableRoomService;
+            _availableRoomService = availableRoomService;
             _logger = logger;
         }
 
-    /// <summary>
-  /// ?? T�m ki?m ph�ng tr?ng theo th?i gian v� lo?i ph�ng
+        /// <summary>
+        /// 🔍 Tìm kiếm phòng trống theo thời gian và loại phòng
         /// </summary>
-       /// <param name="request">Th�ng tin t�m ki?m</param>
-       /// <returns>Danh s�ch ph�ng tr?ng</returns>
         [HttpPost("search")]
-  public async Task<IActionResult> FindAvailableRooms([FromBody] FindAvailableRoomRequest request)
-   {
-    try
-     {
-      // Validation
-         if (request.MaLoaiPhong <= 0)
-  {
-      return BadRequest(new 
-    { 
-          success = false, 
- message = "Vui l�ng ch?n lo?i ph�ng h?p l?." 
-    });
-}
-
-       if (request.ThoiGianBatDau == default)
-     {
-   return BadRequest(new 
-  { 
-    success = false, 
-    message = "Vui l�ng ch?n th?i gian b?t ??u h?p l?." 
-   });
-       }
-
- if (request.ThoiGianSuDung <= 0 || request.ThoiGianSuDung > 8)
-       {
-             return BadRequest(new 
-    { 
-    success = false, 
-       message = "Th?i gian s? d?ng ph?i t? 1 ??n 8 gi?." 
-           });
-   }
-
-   // Ki?m tra th?i gian b?t ??u kh�ng ???c trong qu� kh?
-       if (request.ThoiGianBatDau < DateTime.Now.AddMinutes(-30))
-      {
-       return BadRequest(new 
-     { 
-   success = false, 
-        message = "Th?i gian b?t ??u kh�ng th? trong qu� kh?." 
-      });
-  }
-
- var results = await _availableRoomService.FindAvailableRoomsAsync(request);
-
-     if (!results.Any())
-       {
-       return Ok(new 
-     { 
-        success = true,
-   message = $"Kh�ng c� ph�ng tr?ng cho lo?i ph�ng n�y t? {request.ThoiGianBatDau:dd/MM/yyyy HH:mm} trong {request.ThoiGianSuDung} gi?.",
-       data = new List<AvailableRoomDto>(),
-              total = 0
-       });
-      }
-
-          var thoiGianKetThuc = request.ThoiGianBatDau.AddHours(request.ThoiGianSuDung);
-
-     return Ok(new 
-      { 
-        success = true,
-       message = $"T�m th?y {results.Count} ph�ng tr?ng t? {request.ThoiGianBatDau:dd/MM/yyyy HH:mm} ??n {thoiGianKetThuc:dd/MM/yyyy HH:mm}.",
-      data = results,
-          total = results.Count
-   });
-        }
-      catch (Exception ex)
-  {
- _logger.LogError(ex, "Error finding available rooms");
-        return StatusCode(500, new 
-        { 
-           success = false, 
-             message = "?� x?y ra l?i khi t�m ki?m ph�ng tr?ng." 
-  });
-      }
-        }
-
-    /// <summary>
- /// ? Ki?m tra ph�ng c? th? c� tr?ng kh�ng
-  /// </summary>
-      /// <param name="maPhong">M� ph�ng</param>
-    /// <param name="thoiGianBatDau">Th?i gian b?t ??u (yyyy-MM-dd HH:mm)</param>
-    /// <param name="thoiGianSuDung">Th?i gian s? d?ng (gi?)</param>
-        [HttpGet("check/{maPhong}")]
-     public async Task<IActionResult> CheckRoomAvailability(
-      int maPhong, 
-            [FromQuery] DateTime thoiGianBatDau, 
-  [FromQuery] int thoiGianSuDung = 2)
-   {
-          try
-  {
- if (thoiGianSuDung <= 0 || thoiGianSuDung > 8)
-    {
-           return BadRequest(new 
- { 
-        success = false, 
-        message = "Th?i gian s? d?ng ph?i t? 1 ??n 8 gi?." 
-       });
-       }
-
-     var thoiGianKetThuc = thoiGianBatDau.AddHours(thoiGianSuDung);
-      var isAvailable = await _availableRoomService.IsRoomAvailableAsync(maPhong, thoiGianBatDau, thoiGianKetThuc);
-
-            return Ok(new 
-       { 
-    success = true,
-         data = new 
-    { 
-           MaPhong = maPhong,
-             ThoiGianBatDau = thoiGianBatDau,
-          ThoiGianKetThuc = thoiGianKetThuc,
-      IsAvailable = isAvailable
-           },
-   message = isAvailable ? "Ph�ng c� s?n trong th?i gian n�y." : "Ph�ng ?� ???c ??t trong th?i gian n�y."
-  });
-   }
-   catch (Exception ex)
-     {
-         _logger.LogError(ex, "Error checking room availability for room {RoomId}", maPhong);
-       return StatusCode(500, new 
- { 
-     success = false, 
-     message = "?� x?y ra l?i khi ki?m tra t�nh tr?ng ph�ng." 
-   });
-      }
-        }
-
-        /// <summary>
- /// ?? L?y danh s�ch lo?i ph�ng
-     /// </summary>
-       [HttpGet("room-types")]
-    public async Task<IActionResult> GetRoomTypes()
- {
-  try
- {
-     var roomTypes = await _availableRoomService.GetRoomTypesAsync();
-      
-      return Ok(new 
-    { 
-       success = true,
-  data = roomTypes,
-       total = roomTypes.Count,
-     message = $"L?y th�nh c�ng {roomTypes.Count} lo?i ph�ng."
- });
-   }
-catch (Exception ex)
-     {
-     _logger.LogError(ex, "Error getting room types");
-  return StatusCode(500, new 
-            { 
-  success = false, 
-    message = "?� x?y ra l?i khi l?y danh s�ch lo?i ph�ng." 
-      });
-        }
-        }
-
-        /// <summary>
-    /// ?? API h? tr?: T�m ki?m nhanh v?i tham s? URL
-        /// </summary>
-        /// <param name="maLoaiPhong">M� lo?i ph�ng</param>
-/// <param name="thoiGianBatDau">Th?i gian b?t ??u (yyyy-MM-dd HH:mm)</param>
-      /// <param name="thoiGianSuDung">Th?i gian s? d?ng (gi?) - m?c ??nh 2</param>
-        /// <param name="sucChuaToiThieu">S?c ch?a t?i thi?u (t�y ch?n)</param>
-        [HttpGet("quick-search")]
-        public async Task<IActionResult> QuickSearch(
-    [FromQuery] int maLoaiPhong,
-     [FromQuery] DateTime thoiGianBatDau,
-   [FromQuery] int thoiGianSuDung = 2,
-        [FromQuery] int? sucChuaToiThieu = null)
+        public async Task<IActionResult> FindAvailableRooms([FromBody] FindAvailableRoomRequest request)
         {
-         try
+            try
             {
-    var request = new FindAvailableRoomRequest
-           {
- MaLoaiPhong = maLoaiPhong,
-          ThoiGianBatDau = thoiGianBatDau,
-         ThoiGianSuDung = thoiGianSuDung,
-   SucChuaToiThieu = sucChuaToiThieu
-     };
+                // Validation
+                if (request.MaLoaiPhong <= 0)
+                {
+                    return BadRequest(new { message = "Vui lòng chọn loại phòng hợp lệ." });
+                }
 
-      return await FindAvailableRooms(request);
-    }
-  catch (Exception ex)
-     {
-  _logger.LogError(ex, "Error in quick search");
-     return StatusCode(500, new 
-   { 
-         success = false, 
-           message = "?� x?y ra l?i khi t�m ki?m nhanh." 
-    });
-   }
-   }
+                if (request.ThoiGianBatDau == default)
+                {
+                    return BadRequest(new { message = "Vui lòng chọn thời gian bắt đầu hợp lệ." });
+                }
+
+                if (request.ThoiGianSuDung <= 0 || request.ThoiGianSuDung > 8)
+                {
+                    return BadRequest(new { message = "Thời gian sử dụng phải từ 1 đến 8 giờ." });
+                }
+
+                try
+                {
+                    var results = await _availableRoomService.FindAvailableRoomsAsync(request);
+
+                    if (!results.Any())
+                    {
+                        return Ok(new
+                        {
+                            message = "Không có phòng trống trong thời gian này.",
+                            data = new List<AvailableRoomDto>()
+                        });
+                    }
+
+                    return Ok(new
+                    {
+                        message = $"Tìm thấy {results.Count} phòng trống.",
+                        data = results
+                    });
+                }
+                catch (SqlException sqlEx)
+                {
+                    // Handle stored procedure errors
+                    _logger.LogError(sqlEx, "SQL error from stored procedure");
+
+                    var errorMessage = sqlEx.Message switch
+                    {
+                        var msg when msg.Contains("Vui lòng nhập thời gian bắt đầu hợp lệ") => "Thời gian bắt đầu không hợp lệ.",
+                        var msg when msg.Contains("Loại phòng không tồn tại") => "Loại phòng không tồn tại.",
+                        _ => "Đã xảy ra lỗi khi tìm kiếm phòng trống."
+                    };
+
+                    return BadRequest(new { message = errorMessage });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error finding available rooms");
+                return StatusCode(500, new { message = "Đã xảy ra lỗi không mong muốn." });
+            }
+        }
+            /// <summary>
+            /// 🏠 Chi tiết phòng khi người dùng click vào (bao gồm tài nguyên)
+            /// </summary>
+            [HttpGet("detail/{maPhong}")]
+            public async Task<IActionResult> GetRoomDetail(int maPhong)
+            {
+                try
+                {
+                    var result = await _availableRoomService.GetRoomDetailAsync(maPhong);
+
+                    if (result == null)
+                    {
+                        return NotFound(new { message = "Không tìm thấy thông tin phòng." });
+                    }
+
+                    return Ok(new
+                    {
+                        message = $"Thông tin chi tiết phòng {result.TenPhong}.",
+                        data = result
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error getting room detail for room {RoomId}", maPhong);
+                    return StatusCode(500, new { message = "Đã xảy ra lỗi khi lấy thông tin phòng." });
+                }
+            }
+
+        /// <summary>
+        /// 📋 Lấy danh sách loại phòng
+        /// </summary>
+        [HttpGet("room-types")]
+        public async Task<IActionResult> GetRoomTypes()
+        {
+            try
+            {
+                var roomTypes = await _availableRoomService.GetRoomTypesAsync();
+
+                return Ok(new
+                {
+                    message = "Danh sách loại phòng.",
+                    data = roomTypes
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting room types");
+                return StatusCode(500, new { message = "Đã xảy ra lỗi khi lấy danh sách loại phòng." });
+            }
+        }
     }
 }

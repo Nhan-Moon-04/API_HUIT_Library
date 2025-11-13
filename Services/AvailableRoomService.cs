@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using HUIT_Library.DTOs.DTO;
 using HUIT_Library.DTOs.Request;
 using HUIT_Library.Models;
@@ -14,201 +14,199 @@ namespace HUIT_Library.Services
         private readonly HuitThuVienContext _context;
         private readonly ILogger<AvailableRoomService> _logger;
 
-    // Helper method to get Vietnam timezone
-        private static readonly TimeZoneInfo VietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
-        private DateTime GetVietnamTime()
-        {
- return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, VietnamTimeZone);
-        }
-
         public AvailableRoomService(HuitThuVienContext context, ILogger<AvailableRoomService> logger)
-   {
-   _context = context;
+        {
+            _context = context;
             _logger = logger;
         }
 
-   public async Task<List<AvailableRoomDto>> FindAvailableRoomsAsync(FindAvailableRoomRequest request)
-     {
-    try
-            {
-          _logger.LogInformation("Finding available rooms for room type {RoomTypeId} from {StartTime} for {Duration} hours",
-          request.MaLoaiPhong, request.ThoiGianBatDau, request.ThoiGianSuDung);
-
-      // T�nh th?i gian k?t th�c (m?c ??nh 2 gi?)
-                var thoiGianKetThuc = request.ThoiGianBatDau.AddHours(request.ThoiGianSuDung);
-
-           using var conn = _context.Database.GetDbConnection();
-          if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
-
-    var sql = @"
-     SELECT DISTINCT 
-      p.MaPhong,
-             p.TenPhong,
-lp.TenLoaiPhong,
-            lp.SoLuongChoNgoi AS SucChua,
-    p.ViTri,
-                 p.MoTa,
-       @thoiGianBatDau AS ThoiGianBatDau,
-              @thoiGianKetThuc AS ThoiGianKetThuc,
-          1 as IsAvailable
-  FROM Phong p
-         JOIN LoaiPhong lp ON p.MaLoaiPhong = lp.MaLoaiPhong
-     WHERE p.TinhTrang = N'Ho?t ??ng'
-AND lp.MaLoaiPhong = @maLoaiPhong";
-
-             var parameters = new DynamicParameters();
-  parameters.Add("@maLoaiPhong", request.MaLoaiPhong);
-       parameters.Add("@thoiGianBatDau", request.ThoiGianBatDau);
-    parameters.Add("@thoiGianKetThuc", thoiGianKetThuc);
-
-     // L?c theo s?c ch?a t?i thi?u n?u c�
-    if (request.SucChuaToiThieu.HasValue)
-     {
-           sql += " AND TRY_CAST(lp.SoLuongChoNgoi AS INT) >= @sucChuaToiThieu";
-  parameters.Add("@sucChuaToiThieu", request.SucChuaToiThieu.Value);
- }
-
-      // Lo?i b? ph�ng ?� ???c ??t trong kho?ng th?i gian n�y
- sql += @"
-        AND NOT EXISTS (
-       SELECT 1 FROM DangKyPhong d 
-          WHERE d.MaPhong = p.MaPhong 
-       AND d.MaTrangThai NOT IN (3, 5) -- Kh�ng ph?i t? ch?i ho?c h?y
-       AND NOT (@thoiGianKetThuc <= d.ThoiGianBatDau OR @thoiGianBatDau >= d.ThoiGianKetThuc)
-    )";
-
-             // Lo?i b? ph�ng c� l?ch b?o tr�
-         sql += @"
-                    AND NOT EXISTS (
-          SELECT 1 FROM LichTrangThaiPhong l 
-     WHERE l.MaPhong = p.MaPhong 
-       AND l.Ngay = CAST(@thoiGianBatDau AS DATE)
-       AND NOT (CAST(@thoiGianKetThuc AS TIME) <= l.GioBatDau OR CAST(@thoiGianBatDau AS TIME) >= l.GioKetThuc)
- )
-    ORDER BY p.TenPhong";
-
-           var rooms = await conn.QueryAsync<AvailableRoomDto>(sql, parameters);
-              var roomList = rooms.ToList();
-
-     // L?y thi?t b? ch�nh cho t?ng ph�ng
-                foreach (var room in roomList)
-          {
-    room.ThietBiChinh = await GetMainEquipmentAsync(room.MaPhong);
-       }
-
-       _logger.LogInformation("Found {Count} available rooms for room type {RoomTypeId}", 
-        roomList.Count, request.MaLoaiPhong);
-
-    return roomList;
-            }
-            catch (Exception ex)
-            {
-           _logger.LogError(ex, "Error finding available rooms for room type {RoomTypeId}", request.MaLoaiPhong);
-        return new List<AvailableRoomDto>();
-            }
-        }
-
-      public async Task<bool> IsRoomAvailableAsync(int maPhong, DateTime thoiGianBatDau, DateTime thoiGianKetThuc)
+        public async Task<List<AvailableRoomDto>> FindAvailableRoomsAsync(FindAvailableRoomRequest request)
         {
             try
             {
-       _logger.LogInformation("Checking if room {RoomId} is available from {StartTime} to {EndTime}",
-maPhong, thoiGianBatDau, thoiGianKetThuc);
+                _logger.LogInformation("Finding available rooms using SP for room type {RoomTypeId} from {StartTime} for {Duration} hours",
+                request.MaLoaiPhong, request.ThoiGianBatDau, request.ThoiGianSuDung);
 
-          // Ki?m tra ph�ng c� ?ang ho?t ??ng kh�ng
-   var phong = await _context.Phongs.FindAsync(maPhong);
-           if (phong == null || phong.TinhTrang != "Ho?t ??ng")
-    return false;
+                using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
 
-     // Ki?m tra xung ??t v?i ??ng k� kh�c
-                var hasBookingConflict = await _context.DangKyPhongs
-         .Where(d => d.MaPhong == maPhong &&
-     d.MaTrangThai != 3 && d.MaTrangThai != 5 && // Kh�ng ph?i t? ch?i ho?c h?y
-    !(thoiGianKetThuc <= d.ThoiGianBatDau || thoiGianBatDau >= d.ThoiGianKetThuc))
-              .AnyAsync();
+                // ✅ Sử dụng stored procedure sp_TimPhongTrong_Web
+                var parameters = new DynamicParameters();
+                parameters.Add("@MaLoaiPhong", request.MaLoaiPhong);
+                parameters.Add("@ThoiGianBatDau", request.ThoiGianBatDau);
+                parameters.Add("@KhoangThoiGian", request.ThoiGianSuDung);
 
-                if (hasBookingConflict)
-        return false;
+                var rooms = await conn.QueryAsync<AvailableRoomFromSPDto>(
+                  "dbo.sp_TimPhongTrong_Web",
+            parameters,
+    commandType: CommandType.StoredProcedure);
 
-      // Ki?m tra xung ??t v?i l?ch b?o tr�
-         var dateOnly = DateOnly.FromDateTime(thoiGianBatDau);
-     var startTime = TimeOnly.FromDateTime(thoiGianBatDau);
-           var endTime = TimeOnly.FromDateTime(thoiGianKetThuc);
+                var roomList = new List<AvailableRoomDto>();
 
-          var hasMaintenanceConflict = await _context.LichTrangThaiPhongs
-     .Where(l => l.MaPhong == maPhong &&
- l.Ngay == dateOnly &&
-        !(endTime <= l.GioBatDau || startTime >= l.GioKetThuc))
-    .AnyAsync();
+                foreach (var room in rooms)
+                {
+                    // Lọc theo sức chứa tối thiểu nếu có yêu cầu
+                    if (request.SucChuaToiThieu.HasValue)
+                    {
+                        if (int.TryParse(room.SoLuongChoNgoi, out int capacity))
+                        {
+                            if (capacity < request.SucChuaToiThieu.Value)
+                                continue; // Bỏ qua phòng không đủ sức chứa
+                        }
+                    }
 
-                return !hasMaintenanceConflict;
+                    // ✅ Chỉ trả về thông tin cần thiết cho user
+                    var availableRoom = new AvailableRoomDto
+                    {
+                        MaPhong = room.MaPhong,
+                        TenPhong = room.TenPhong,
+                        TenLoaiPhong = room.TenLoaiPhong,
+                        SucChua = room.SoLuongChoNgoi
+                    };
+
+                    // Lấy vị trí phòng
+                    await EnhanceBasicRoomInfoAsync(availableRoom);
+                    roomList.Add(availableRoom);
+                }
+
+                _logger.LogInformation("Found {Count} available rooms for room type {RoomTypeId} (after filtering)",
+               roomList.Count, request.MaLoaiPhong);
+
+                return roomList;
             }
-       catch (Exception ex)
-         {
-            _logger.LogError(ex, "Error checking room availability for room {RoomId}", maPhong);
-     return false;
-            }
-        }
-
-        public async Task<List<RoomTypeSimpleDto>> GetRoomTypesAsync()
-  {
-            try
-            {
-          _logger.LogInformation("Getting all room types");
-
-    using var conn = _context.Database.GetDbConnection();
-         if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
-
-        var sql = @"
-        SELECT 
-      lp.MaLoaiPhong,
-        lp.TenLoaiPhong,
-   lp.MoTa,
-      lp.SoLuongChoNgoi,
-        COUNT(p.MaPhong) as SoPhongKhaDung
-         FROM LoaiPhong lp
-           LEFT JOIN Phong p ON lp.MaLoaiPhong = p.MaLoaiPhong AND p.TinhTrang = N'Ho?t ??ng'
-    GROUP BY lp.MaLoaiPhong, lp.TenLoaiPhong, lp.MoTa, lp.SoLuongChoNgoi
-            ORDER BY lp.TenLoaiPhong";
-
-    var results = await conn.QueryAsync<RoomTypeSimpleDto>(sql);
-  
-     _logger.LogInformation("Retrieved {Count} room types", results.Count());
-       return results.ToList();
-    }
             catch (Exception ex)
             {
-     _logger.LogError(ex, "Error getting room types");
-     return new List<RoomTypeSimpleDto>();
-       }
- }
-
- /// <summary>
-        /// L?y danh s�ch thi?t b? ch�nh c?a ph�ng
-    /// </summary>
-        private async Task<List<string>> GetMainEquipmentAsync(int maPhong)
- {
-            try
- {
- using var conn = _context.Database.GetDbConnection();
-     if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
-
-var sql = @"
-        SELECT TOP 3 tn.TenTaiNguyen
-            FROM PhongTaiNguyen pt
-             JOIN TaiNguyen tn ON pt.MaTaiNguyen = tn.MaTaiNguyen
- WHERE pt.MaPhong = @maPhong 
-             AND pt.TinhTrang = N'T?t'
-ORDER BY tn.TenTaiNguyen";
-
-         var equipment = await conn.QueryAsync<string>(sql, new { maPhong });
-       return equipment.ToList();
-            }
-catch (Exception ex)
-     {
-   _logger.LogWarning(ex, "Error getting equipment for room {RoomId}", maPhong);
-     return new List<string>();
+                _logger.LogError(ex, "Error finding available rooms for room type {RoomTypeId} using stored procedure", request.MaLoaiPhong);
+                return new List<AvailableRoomDto>();
             }
         }
+
+        public async Task<RoomDetailDto?> GetRoomDetailAsync(int maPhong)
+        {
+            try
+            {
+                _logger.LogInformation("Getting room detail for room {RoomId}", maPhong);
+
+                using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed)
+                    await conn.OpenAsync();
+
+                // 1️⃣ Lấy thông tin chi tiết phòng
+                var roomSql = @"
+            SELECT 
+                p.MaPhong, 
+                p.TenPhong, 
+                lp.TenLoaiPhong, 
+                lp.SoLuongChoNgoi AS SucChua
+            FROM Phong p
+            JOIN LoaiPhong lp ON p.MaLoaiPhong = lp.MaLoaiPhong
+            WHERE p.MaPhong = @maPhong";
+
+                var room = await conn.QueryFirstOrDefaultAsync<RoomDetailDto>(roomSql, new { maPhong });
+                if (room == null)
+                {
+                    _logger.LogWarning("Room {RoomId} not found", maPhong);
+                    return null;
+                }
+
+                _logger.LogInformation("Found room: {RoomName} ({RoomType})", room.TenPhong, room.TenLoaiPhong);
+
+                // 2️⃣ Lấy danh sách tài nguyên
+                var resourceSql = @"
+            SELECT 
+                tn.TenTaiNguyen, 
+                pt.SoLuong
+            FROM Phong_TaiNguyen pt
+            JOIN TaiNguyen tn ON pt.MaTaiNguyen = tn.MaTaiNguyen
+            WHERE pt.MaPhong = @maPhong
+            ORDER BY tn.TenTaiNguyen";
+
+                var resources = await conn.QueryAsync<RoomResourceDto>(resourceSql, new { maPhong });
+                room.TaiNguyen = resources.ToList();
+
+                _logger.LogInformation("Room {RoomId} has {ResourceCount} resources", maPhong, room.TaiNguyen.Count);
+
+                return room;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting room details for room {RoomId}", maPhong);
+                return null;
+            }
+        }
+
+
+        public async Task<List<RoomTypeSimpleDto>> GetRoomTypesAsync()
+        {
+            try
+            {
+                _logger.LogInformation("Getting all room types");
+
+                using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
+
+                var sql = @"
+           SELECT 
+          lp.MaLoaiPhong,
+               lp.TenLoaiPhong,
+             lp.SoLuongChoNgoi,
+            COUNT(p.MaPhong) as SoPhongKhaDung
+     FROM LoaiPhong lp
+LEFT JOIN Phong p ON lp.MaLoaiPhong = p.MaLoaiPhong AND p.TinhTrang = N'Hoạt động'
+    GROUP BY lp.MaLoaiPhong, lp.TenLoaiPhong, lp.SoLuongChoNgoi
+ ORDER BY lp.TenLoaiPhong";
+
+                var results = await conn.QueryAsync<RoomTypeSimpleDto>(sql);
+
+                _logger.LogInformation("Retrieved {Count} room types", results.Count());
+                return results.ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting room types");
+                return new List<RoomTypeSimpleDto>();
+            }
+        }
+
+        /// <summary>
+        /// Bổ sung thông tin cơ bản cho phòng (chỉ vị trí)
+        /// </summary>
+        private async Task EnhanceBasicRoomInfoAsync(AvailableRoomDto room)
+        {
+            try
+            {
+                using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
+
+                var roomDetailSql = @"
+     SELECT p.ViTri 
+     FROM Phong p 
+ WHERE p.MaPhong = @maPhong";
+
+                var roomDetail = await conn.QueryFirstOrDefaultAsync<dynamic>(roomDetailSql, new { maPhong = room.MaPhong });
+                if (roomDetail != null)
+                {
+                    room.ViTri = roomDetail.ViTri;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing basic room info for room {RoomId}", room.MaPhong);
+            }
+        }
+    }
+
+    /// <summary>
+    /// DTO để map kết quả từ stored procedure sp_TimPhongTrong_Web
+    /// </summary>
+    internal class AvailableRoomFromSPDto
+    {
+        public int MaPhong { get; set; }
+        public string TenPhong { get; set; } = string.Empty;
+        public string TenLoaiPhong { get; set; } = string.Empty;
+        public string SoLuongChoNgoi { get; set; } = string.Empty;
+        public string TrangThaiHienThi { get; set; } = string.Empty;
+        public string GioBatDau { get; set; } = string.Empty;
+        public string GioKetThuc { get; set; } = string.Empty;
     }
 }

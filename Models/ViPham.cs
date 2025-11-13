@@ -17,6 +17,8 @@ public partial class ViPham
 
     public string? GhiChu { get; set; }
 
+    public byte[]? BienBan { get; set; }
+
     public virtual QuyDinhViPham? MaQuyDinhNavigation { get; set; }
 
     public virtual SuDungPhong MaSuDungNavigation { get; set; } = null!;
