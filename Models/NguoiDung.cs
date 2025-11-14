@@ -19,6 +19,8 @@ public partial class NguoiDung
 
     public string? SoDienThoai { get; set; }
 
+    public DateTime? LastActivity { get; set; }
+
     public virtual ICollection<BotConversation> BotConversations { get; set; } = new List<BotConversation>();
 
     public virtual ICollection<DangKyPhong> DangKyPhongs { get; set; } = new List<DangKyPhong>();
@@ -40,4 +42,6 @@ public partial class NguoiDung
     public virtual SinhVien? SinhVien { get; set; }
 
     public virtual ICollection<ThongBao> ThongBaos { get; set; } = new List<ThongBao>();
+
+    public virtual ICollection<VisitLog> VisitLogs { get; set; } = new List<VisitLog>();
 }

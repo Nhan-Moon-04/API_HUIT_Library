@@ -67,6 +67,8 @@ public partial class HuitThuVienContext : DbContext
 
     public virtual DbSet<ViPham> ViPhams { get; set; }
 
+    public virtual DbSet<VisitLog> VisitLogs { get; set; }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
 #warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
         => optionsBuilder.UseSqlServer("Server=NGUYEN-NHAN\\SQLEXPRESS;Database=HUIT_ThuVien;Trusted_Connection=True;TrustServerCertificate=True;");
@@ -271,6 +273,7 @@ public partial class HuitThuVienContext : DbContext
 
             entity.Property(e => e.Email).HasMaxLength(100);
             entity.Property(e => e.HoTen).HasMaxLength(100);
+            entity.Property(e => e.LastActivity).HasColumnType("datetime");
             entity.Property(e => e.MaDangNhap)
                 .HasMaxLength(20)
                 .IsUnicode(false);
@@ -556,6 +559,25 @@ public partial class HuitThuVienContext : DbContext
                 .HasForeignKey(d => d.MaSuDung)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_ViPham_SuDungPhong");
+        });
+
+        modelBuilder.Entity<VisitLog>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__VisitLog__3214EC07A4D02C80");
+
+            entity.ToTable("VisitLog");
+
+            entity.Property(e => e.Ipaddress)
+                .HasMaxLength(50)
+                .HasColumnName("IPAddress");
+            entity.Property(e => e.VisitTime)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+
+            entity.HasOne(d => d.User).WithMany(p => p.VisitLogs)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("FK_VisitLog_User");
         });
 
         OnModelCreatingPartial(modelBuilder);
