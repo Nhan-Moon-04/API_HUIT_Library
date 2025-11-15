@@ -19,40 +19,38 @@ namespace HUIT_Library.Services
         private readonly ILogger<BookingService> _logger;
         private readonly IConfiguration _configuration;
 
-        private const int DB_PENDING = 1;
-        private const int DB_APPROVED = 2;
-        private const int DB_REJECTED = 3; // DB uses3 for "Từ chối"
-        private const int DB_INUSE = 4; // DB uses4 for "Đang sử dụng"
-        private const int DB_CANCELLED = 5;
-        private const int DB_USED = 7; // DB uses7 for "Đã sử dụng"
+        private const int DB_PENDING = 1;      // Chờ duyệt
+        private const int DB_APPROVED = 2;     // Đã duyệt  
+        private const int DB_REJECTED = 3;     // Từ chối
+        private const int DB_INUSE = 4;   // Đang sử dụng
+        private const int DB_CANCELLED = 5;    // Hủy
+        private const int DB_USED = 6;         // Đã trả phòng
 
         // Logical booking statuses used throughout the app
         private enum BookingStatus
         {
-            Pending = 1, // Chờ duyệt
-            Approved = 2, // Đã duyệt
-            InUse = 3, // Đang sử dụng
-            Rejected = 4, // Từ chối
-            Cancelled = 5, // Hủy
-            Used = 6 // Đã sử dụng
+            Pending = 1,    // Chờ duyệt
+            Approved = 2,   // Đã duyệt
+            Rejected = 3,   // Từ chối
+            InUse = 4,      // Đang sử dụng
+            Cancelled = 5,  // Hủy
+            Used = 6        // Đã trả phòng
         }
 
-        // Map DB values (legacy/messy) to normalized BookingStatus
+        // Map DB values to normalized BookingStatus
         private BookingStatus MapDbToStatus(int? dbValue)
         {
             return dbValue switch
             {
                 DB_PENDING => BookingStatus.Pending,
                 DB_APPROVED => BookingStatus.Approved,
-                DB_INUSE => BookingStatus.InUse,
                 DB_REJECTED => BookingStatus.Rejected,
+                DB_INUSE => BookingStatus.InUse,
                 DB_CANCELLED => BookingStatus.Cancelled,
                 DB_USED => BookingStatus.Used,
                 _ => BookingStatus.Pending
             };
         }
-
-        // Map normalized BookingStatus back to DB value so updates write the correct legacy value
 
         private string GetStatusName(BookingStatus status)
         {
@@ -60,8 +58,8 @@ namespace HUIT_Library.Services
             {
                 BookingStatus.Pending => "Chờ duyệt",
                 BookingStatus.Approved => "Đã duyệt",
-                BookingStatus.InUse => "Đang sử dụng",
                 BookingStatus.Rejected => "Từ chối",
+                BookingStatus.InUse => "Đang sử dụng",
                 BookingStatus.Cancelled => "Hủy",
                 BookingStatus.Used => "Đã trả phòng",
                 _ => "Không xác định"
@@ -263,70 +261,116 @@ namespace HUIT_Library.Services
 
         public async Task<(bool Success, string? Message)> ExtendBookingAsync(int userId, ExtendBookingRequest request)
         {
-            // Load booking
-            var booking = await _context.DangKyPhongs.FindAsync(request.MaDangKy);
-            if (booking == null) return (false, "Yêu cầu không tồn tại.");
-            if (booking.MaNguoiDung != userId) return (false, "Bạn không có quyền gia hạn yêu cầu này.");
-
-            // Must be currently in use
-            var now = GetVietnamTime(); // Sử dụng giờ Việt Nam
-            if (!(booking.ThoiGianBatDau <= now && booking.ThoiGianKetThuc >= now))
-                return (false, "Lượt mượn không đang trong thời gian sử dụng.");
-
-            // Must have more than 15 minutes remaining
-            var remaining = booking.ThoiGianKetThuc - now;
-            if (remaining.TotalMinutes < 15)
-                return (false, "Không thể gia hạn khi còn dưới 15 phút.");
-
-            // New end time must be extension of original end and within 1-2 hours extension
-            if (request.NewEndTime <= booking.ThoiGianKetThuc)
-                return (false, "Thời gian kết thúc mới phải lớn hơn thời gian hiện tại.");
-
-            var extension = request.NewEndTime - booking.ThoiGianKetThuc;
-            if (extension <= TimeSpan.Zero || extension > TimeSpan.FromHours(2))
-                return (false, "Gia hạn chỉ cho phép 1-2 giờ.");
-
-            // Check conflicts for the extended interval
-            var conflicts = await _context.DangKyPhongs
-                .Where(d => d.MaPhong == booking.MaPhong && d.MaDangKy != booking.MaDangKy &&
-                            !(request.NewEndTime <= d.ThoiGianBatDau || booking.ThoiGianKetThuc >= d.ThoiGianKetThuc))
-                .AnyAsync();
-
-            if (conflicts)
-                return (false, "Gia hạn thất bại. Phòng đã được đặt trước.");
-
-            // Also check LichTrangThaiPhong schedules for the additional period (date may cross days)
-            var startDate = booking.ThoiGianKetThuc.Date;
-            var endDate = request.NewEndTime.Date;
-            for (var dt = startDate; dt <= endDate; dt = dt.AddDays(1))
-            {
-                var dateOnly = DateOnly.FromDateTime(dt);
-                var start = dt == startDate ? booking.ThoiGianKetThuc.TimeOfDay : TimeSpan.Zero;
-                var end = dt == endDate ? request.NewEndTime.TimeOfDay : TimeSpan.FromHours(24);
-
-                var scheduleConflict = await _context.LichTrangThaiPhongs
-                    .Where(l => l.MaPhong == booking.MaPhong && l.Ngay == dateOnly &&
-                                !(end <= l.GioBatDau.ToTimeSpan() || start >= l.GioKetThuc.ToTimeSpan()))
-                    .AnyAsync();
-
-                if (scheduleConflict)
-                    return (false, "Gia hạn thất bại. Phòng đã được đặt trước.");
-            }
-
-            // Auto-approve and update end time
-            booking.ThoiGianKetThuc = request.NewEndTime;
-            booking.NgayDuyet = GetVietnamTime(); // Sử dụng giờ Việt Nam
-            booking.NguoiDuyet = 0; // system
-            booking.MaTrangThai = 2; // assume 2 = approved
-
             try
             {
+                _logger.LogInformation("User {UserId} requesting extension for booking {BookingId} to {NewEndTime}",
+                    userId, request.MaDangKy, request.NewEndTime);
+
+                // 1️⃣ Load booking và kiểm tra quyền
+                var booking = await _context.DangKyPhongs.FindAsync(request.MaDangKy);
+                if (booking == null)
+                    return (false, "Yêu cầu đặt phòng không tồn tại.");
+
+                if (booking.MaNguoiDung != userId)
+                    return (false, "Bạn không có quyền gia hạn yêu cầu này.");
+
+                // 2️⃣ Kiểm tra trạng thái - chỉ cho phép gia hạn khi đang sử dụng (trạng thái 4)
+                if (booking.MaTrangThai != DB_INUSE)
+                {
+                    var statusMessage = booking.MaTrangThai switch
+                    {
+                        DB_PENDING => "Đăng ký đang chờ duyệt, chưa thể gia hạn",
+                        DB_APPROVED => "Đăng ký đã được duyệt nhưng chưa bắt đầu sử dụng",
+                        DB_REJECTED => "Đăng ký đã bị từ chối",
+                        DB_CANCELLED => "Đăng ký đã bị hủy",
+                        DB_USED => "Đăng ký đã kết thúc, không thể gia hạn",
+                        _ => "Trạng thái không hợp lệ để gia hạn"
+                    };
+                    return (false, statusMessage);
+                }
+
+                var now = GetVietnamTime();
+
+                // 3️⃣ Kiểm tra thời gian - phải còn hơn 15 phút và đang trong thời gian sử dụng
+                if (!(booking.ThoiGianBatDau <= now && booking.ThoiGianKetThuc > now))
+                    return (false, "Phòng không đang trong thời gian sử dụng.");
+
+                var remaining = booking.ThoiGianKetThuc - now;
+                if (remaining.TotalMinutes < 15)
+                    return (false, "Không thể gia hạn khi còn dưới 15 phút.");
+
+                // 4️⃣ Kiểm tra thời gian gia hạn hợp lệ - tối đa 2 giờ
+                if (request.NewEndTime <= booking.ThoiGianKetThuc)
+                    return (false, "Thời gian kết thúc mới phải lớn hơn thời gian hiện tại.");
+
+                var extension = request.NewEndTime - booking.ThoiGianKetThuc;
+                if (extension <= TimeSpan.Zero || extension > TimeSpan.FromHours(2))
+                    return (false, "Chỉ cho phép gia hạn tối đa 2 giờ.");
+
+                // 5️⃣ Gọi stored procedure để kiểm tra xung đột 
+                using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
+
+                var parameters = new DynamicParameters();
+                parameters.Add("@MaPhong", booking.MaPhong);
+                parameters.Add("@MaDangKyHienTai", request.MaDangKy);
+                parameters.Add("@ThoiGianBatDauGiaHan", booking.ThoiGianKetThuc);
+                parameters.Add("@ThoiGianKetThucMoi", request.NewEndTime);
+                parameters.Add("@KetQua", dbType: DbType.Int32, direction: ParameterDirection.Output);
+                parameters.Add("@ThongBao", dbType: DbType.String, size: 500, direction: ParameterDirection.Output);
+
+                _logger.LogInformation("Calling sp_KiemTraGiaHanPhong for room {RoomId}, current booking {BookingId}",
+                 booking.MaPhong, request.MaDangKy);
+
+                await conn.ExecuteAsync("dbo.sp_KiemTraGiaHanPhong", parameters, commandType: CommandType.StoredProcedure);
+
+                var ketQua = parameters.Get<int>("@KetQua");
+                var thongBao = parameters.Get<string>("@ThongBao") ?? "";
+
+                if (ketQua != 0)
+                {
+                    _logger.LogWarning("Extension failed for booking {BookingId}. Code: {Code}, Message: {Message}",
+                      request.MaDangKy, ketQua, thongBao);
+                    return (false, thongBao);
+                }
+
+                // 6️⃣ Cập nhật thời gian kết thúc và auto-approve
+                booking.ThoiGianKetThuc = request.NewEndTime;
+                booking.NgayDuyet = now;
+                booking.NguoiDuyet = 0; // System auto-approve
+
                 await _context.SaveChangesAsync();
-                return (true, "Gia hạn thành công.");
+
+                // 7️⃣ Tạo thông báo cho user
+                var extensionMinutes = (int)extension.TotalMinutes;
+                var thongBaoGiaHan = new ThongBao
+                {
+                    MaNguoiDung = userId,
+                    TieuDe = "✅ Gia hạn phòng thành công",
+                    NoiDung = $"Bạn đã gia hạn thành công phòng {booking.MaPhongNavigation?.TenPhong ?? "N/A"} " +
+                             $"thêm {extensionMinutes} phút (đến {request.NewEndTime:HH:mm dd/MM/yyyy}). " +
+               $"Mã đăng ký: #{request.MaDangKy}",
+                    NgayTao = now,
+                    DaDoc = false
+                };
+
+                _context.ThongBaos.Add(thongBaoGiaHan);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Successfully extended booking {BookingId} for user {UserId} by {Minutes} minutes",
+              request.MaDangKy, userId, extensionMinutes);
+
+                return (true, $"✅ Gia hạn thành công thêm {extensionMinutes} phút! Thời gian mới: {request.NewEndTime:HH:mm dd/MM/yyyy}");
             }
-            catch
+            catch (SqlException ex)
             {
-                return (false, "Lỗi hệ thống. Vui lòng thử lại.");
+                _logger.LogError(ex, "SQL error during booking extension for booking {BookingId}", request.MaDangKy);
+                return (false, "Lỗi hệ thống khi gia hạn. Vui lòng thử lại sau.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extending booking {BookingId} for user {UserId}", request.MaDangKy, userId);
+                return (false, "Đã xảy ra lỗi không mong muốn. Vui lòng thử lại.");
             }
         }
         public async Task<(bool Success, string? Message)> CompleteBookingAsync(int userId, int maDangKy)
@@ -339,8 +383,8 @@ namespace HUIT_Library.Services
             if (booking.MaNguoiDung != userId)
                 return (false, "Bạn không có quyền trả phòng cho đăng ký này.");
 
-            // Kiểm tra trạng thái hiện tại - chỉ cho phép trả phòng khi đang sử dụng (trạng thái 3)
-            if (booking.MaTrangThai != 3)
+            // Kiểm tra trạng thái hiện tại - chỉ cho phép trả phòng khi đang sử dụng (trạng thái 4)
+            if (booking.MaTrangThai != DB_INUSE)
             {
                 var statusMessage = booking.MaTrangThai switch
                 {
@@ -354,9 +398,9 @@ namespace HUIT_Library.Services
                 return (false, statusMessage);
             }
 
-            var now = GetVietnamTime(); // Sử dụng giờ Việt Nam
+            var now = GetVietnamTime();
 
-            // Tìm bản ghi sử dụng phòng (phải có vì đã ở trạng thái 3)
+            // Tìm bản ghi sử dụng phòng (phải có vì đã ở trạng thái 4)
             var usage = await _context.SuDungPhongs.FirstOrDefaultAsync(s => s.MaDangKy == maDangKy);
             if (usage == null)
             {
@@ -364,7 +408,7 @@ namespace HUIT_Library.Services
                 usage = new SuDungPhong
                 {
                     MaDangKy = maDangKy,
-                    GioBatDauThucTe = booking.ThoiGianBatDau, // Thời gian dự kiến
+                    GioBatDauThucTe = booking.ThoiGianBatDau,
                     GioKetThucThucTe = now,
                     TinhTrangPhong = "Tốt",
                     GhiChu = "Trả phòng - Tạo bản ghi sử dụng tự động"
@@ -388,8 +432,8 @@ namespace HUIT_Library.Services
                     usage.GhiChu += " - Trả phòng bởi người dùng";
             }
 
-            // Cập nhật trạng thái đăng ký từ 3 (sử dụng phòng) lên 6 (đã sử dụng)
-            booking.MaTrangThai = 6;
+            // Cập nhật trạng thái đăng ký từ 4 (đang sử dụng) lên 6 (đã trả phòng)
+            booking.MaTrangThai = DB_USED;
 
             // Tính toán thời gian sử dụng
             var actualStartTime = usage.GioBatDauThucTe ?? booking.ThoiGianBatDau;
@@ -640,9 +684,9 @@ namespace HUIT_Library.Services
 
                 var nowVn = GetVietnamTime();
 
-                // Lấy các đăng ký hiện tại:
-                // - luôn lấy các bản ghi đang sử dụng (DB_INUSE)
-                // - lấy các bản ghi chờ duyệt (DB_PENDING) hoặc đã duyệt (DB_APPROVED)
+                // Lấy các đăng ký hiện tại với trạng thái mới:
+                // - Luôn lấy các bản ghi đang sử dụng (DB_INUSE = 4)
+                // - Lấy các bản ghi chờ duyệt (DB_PENDING = 1) hoặc đã duyệt (DB_APPROVED = 2)
                 //   chỉ khi chưa quá thời gian kết thúc
                 var query = from dk in _context.DangKyPhongs
                             join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
@@ -652,9 +696,9 @@ namespace HUIT_Library.Services
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             where dk.MaNguoiDung == userId && (
                                 dk.MaTrangThai == DB_INUSE ||
-                                ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) &&
-                                 dk.ThoiGianKetThuc >= nowVn)
-                            )
+                         ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) &&
+                             dk.ThoiGianKetThuc >= nowVn)
+                               )
                             orderby dk.ThoiGianBatDau
                             select new { dk, p, loaiPhong, tt };
 
@@ -677,25 +721,30 @@ namespace HUIT_Library.Services
                     var minutesUntilStart = (int)(start - nowVn).TotalMinutes;
                     var minutesRemaining = (int)(end - nowVn).TotalMinutes;
 
-                    // Actions
+                    // Actions với logic mới
                     var canStart = normalizedStatus == BookingStatus.Approved &&
-                                   minutesUntilStart <= 15 && minutesUntilStart >= -5;
+                        minutesUntilStart <= 15 && minutesUntilStart >= -5;
 
                     var canExtend = normalizedStatus == BookingStatus.InUse &&
-                                    minutesRemaining > 15 && nowVn >= start && nowVn <= end;
+                     minutesRemaining > 15 && nowVn >= start && nowVn <= end;
 
                     var canComplete = normalizedStatus == BookingStatus.InUse;
 
-                    // Status description
+                    // Status description với trạng thái mới
                     string statusDescription = normalizedStatus switch
                     {
-                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt ({minutesUntilStart} phút nữa)" : "Đang chờ duyệt",
-                        BookingStatus.Approved => minutesUntilStart > 0 ? $"Đã duyệt, sẵn sàng bắt đầu trong {minutesUntilStart} phút" : "Đã duyệt",
-                        BookingStatus.InUse => "Đang sử dụng",
+                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
+                        BookingStatus.Approved when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
+                        BookingStatus.Approved when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
+                        BookingStatus.Approved when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
+                        BookingStatus.Approved when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
+                        BookingStatus.InUse when minutesRemaining > 15 => $"Đang sử dụng - Còn {minutesRemaining} phút (có thể gia hạn)",
+                        BookingStatus.InUse when minutesRemaining <= 15 && minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút (không thể gia hạn)",
+                        BookingStatus.InUse when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
                         BookingStatus.Rejected => "Đã từ chối",
                         BookingStatus.Cancelled => "Đã hủy",
-                        BookingStatus.Used => "Đã sử dụng",
-                        _ => "Trạng thái không xác định"
+                        BookingStatus.Used => "Đã trả phòng",
+                        _ => GetStatusName(normalizedStatus)
                     };
 
                     return new CurrentBookingDto
