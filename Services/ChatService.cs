@@ -625,18 +625,18 @@ namespace HUIT_Library.Services
         {
             try
             {
-                _logger.LogInformation("Getting latest chat session with messages for user {UserId}", userId);
+                _logger.LogInformation("Getting latest BOT chat session with messages for user {UserId}", userId);
 
-                // Get latest session
+                // ✅ Chỉ lấy phiên chat BOT
                 var latestSession = await _context.PhienChats
-                    .Where(p => p.MaNguoiDung == userId)
+                    .Where(p => p.MaNguoiDung == userId && p.CoBot == true)
                     .OrderByDescending(p => p.ThoiGianBatDau)
                     .FirstOrDefaultAsync();
 
-                // If user has no sessions, auto-create a bot session
+                // If user has no BOT sessions, auto-create BOT session
                 if (latestSession == null)
                 {
-                    _logger.LogInformation("User {UserId} has no chat sessions, auto-creating bot session", userId);
+                    _logger.LogInformation("User {UserId} has no BOT chat sessions, auto-creating bot session", userId);
 
                     // Check if user exists
                     var user = await _context.NguoiDungs.FindAsync(userId);
@@ -649,7 +649,7 @@ namespace HUIT_Library.Services
                     // Create bot session with welcome message
                     var newBotSession = await CreateBotSessionAsync(userId, new CreateBotSessionRequest
                     {
-                        InitialMessage = null // This will trigger the default welcome message
+                        InitialMessage = null // Triggers default welcome message
                     });
 
                     if (newBotSession == null)
@@ -659,10 +659,10 @@ namespace HUIT_Library.Services
                     }
 
                     latestSession = newBotSession;
-                    _logger.LogInformation("Auto-created bot session {SessionId} for user {UserId}", latestSession.MaPhienChat, userId);
+                    _logger.LogInformation("Auto-created BOT session {SessionId} for user {UserId}", latestSession.MaPhienChat, userId);
                 }
 
-                // Get all messages for this session
+                // Get all messages for this bot session
                 var messages = await _context.TinNhans
                     .Where(t => t.MaPhienChat == latestSession.MaPhienChat)
                     .OrderBy(t => t.ThoiGianGui)
@@ -677,7 +677,7 @@ namespace HUIT_Library.Services
                     })
                     .ToListAsync();
 
-                // Create session DTO with messages
+                // Return DTO
                 var result = new ChatSessionWithMessagesDto
                 {
                     SessionInfo = new ChatSessionDto
@@ -696,16 +696,91 @@ namespace HUIT_Library.Services
                     TotalMessages = messages.Count
                 };
 
-                _logger.LogInformation("Found/created session {SessionId} with {MessageCount} messages for user {UserId}",
+                _logger.LogInformation("Found/created BOT session {SessionId} with {MessageCount} messages for user {UserId}",
                     latestSession.MaPhienChat, messages.Count, userId);
 
                 return result;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting/creating latest chat session with messages for user {UserId}", userId);
+                _logger.LogError(ex, "Error getting/creating latest BOT chat session with messages for user {UserId}", userId);
                 return null;
             }
         }
+
+
+        public async Task<ChatSessionWithMessagesDto?> GetLatestUserStaffChatAsync(int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Getting latest USER-STAFF chat session for user {UserId}", userId);
+
+                // 1️⃣ Lấy phiên chat mới nhất giữa User và Nhân viên (không phải bot)
+                var latestSession = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId && p.CoBot == false) // Chỉ user ↔ nhân viên
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .FirstOrDefaultAsync();
+
+                if (latestSession == null)
+                {
+                    _logger.LogInformation("User {UserId} has no USER-STAFF chat sessions.", userId);
+                    return null;
+                }
+
+                // 2️⃣ Lấy toàn bộ tin nhắn trong phiên
+                var messages = await _context.TinNhans
+                    .Where(t => t.MaPhienChat == latestSession.MaPhienChat)
+                    .OrderBy(t => t.ThoiGianGui)
+                    .Select(t => new MessageDto
+                    {
+                        MaTinNhan = t.MaTinNhan,
+                        MaPhienChat = t.MaPhienChat,
+                        MaNguoiGui = t.MaNguoiGui,
+                        NoiDung = t.NoiDung,
+                        ThoiGianGui = t.ThoiGianGui,
+                        LaBot = t.LaBot
+                    })
+                    .ToListAsync();
+
+                // 3️⃣ Trả về DTO phiên + tin nhắn
+                var result = new ChatSessionWithMessagesDto
+                {
+                    SessionInfo = new ChatSessionDto
+                    {
+                        MaPhienChat = latestSession.MaPhienChat,
+                        MaNguoiDung = latestSession.MaNguoiDung,
+                        MaNhanVien = latestSession.MaNhanVien,
+                        CoBot = latestSession.CoBot,
+                        ThoiGianBatDau = latestSession.ThoiGianBatDau ?? GetVietnamTime(),
+                        ThoiGianKetThuc = latestSession.ThoiGianKetThuc,
+                        SoLuongTinNhan = messages.Count,
+                        TinNhanCuoi = messages.LastOrDefault()?.NoiDung,
+                        ThoiGianTinNhanCuoi = messages.LastOrDefault()?.ThoiGianGui
+                    },
+                    Messages = messages,
+                    TotalMessages = messages.Count
+                };
+
+                _logger.LogInformation(
+                    "Found user-staff session {SessionId} with {Count} messages for user {UserId}",
+                    latestSession.MaPhienChat,
+                    messages.Count,
+                    userId
+                );
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Error while getting USER-STAFF chat session for user {UserId}",
+                    userId);
+                return null;
+            }
+        }
+
+        
+
+
     }
 }

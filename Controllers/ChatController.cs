@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using System.Text.Json;
+using HUIT_Library.Services.IServices;
 
 namespace HUIT_Library.Controllers;
 
@@ -312,6 +313,67 @@ public class ChatController : ControllerBase
             });
         }
     }
+
+
+
+
+    /// <summary>
+    /// Lấy phiên chat mới nhất giữa User và Nhân viên (không lấy chatbot)
+    /// Không tự tạo phiên bot, chỉ lấy phiên thật
+    /// </summary>
+    [Authorize]
+    [HttpGet("staff/latest-with-messages-staff")]
+    public async Task<IActionResult> GetLatestStaffUserChat()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            _logger.LogWarning("Invalid user ID claim when getting staff-user chat: {UserIdClaim}", userIdClaim);
+            return Unauthorized(new { message = "Token không hợp lệ" });
+        }
+
+        try
+        {
+            _logger.LogInformation("Getting latest STAFF-USER chat session for user {UserId} ({UserName})",
+                userId, userNameClaim);
+
+            // GỌI SERVICE CHỈ LẤY PHIÊN STAFF-USER
+            var latestSession = await _chatService.GetLatestUserStaffChatAsync(userId);
+
+            if (latestSession is null)
+            {
+                return Ok(new
+                {
+                    success = true,
+                    data = (object?)null,
+                    message = "Người dùng chưa có phiên chat với nhân viên"
+                });
+            }
+
+            var message = $"Đã tải thành công phiên chat nhân viên mới nhất (ID: {latestSession.SessionInfo.MaPhienChat}) với {latestSession.TotalMessages} tin nhắn";
+
+            return Ok(new
+            {
+                success = true,
+                data = latestSession,
+                isNewSession = false,
+                message = message
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting staff-user chat session for user {UserId}", userId);
+            return StatusCode(500, new
+            {
+                success = false,
+                message = "Lỗi hệ thống khi tải phiên chat nhân viên",
+                error = ex.Message
+            });
+        }
+    }
+
 
     /// <summary>
     /// Load all chat sessions for current user (for when user logs in)

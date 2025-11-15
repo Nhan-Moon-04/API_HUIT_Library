@@ -53,3 +53,15 @@ public class ChatSessionWithMessagesDto
     public IEnumerable<MessageDto> Messages { get; set; } = new List<MessageDto>();
     public int TotalMessages { get; set; }
 }
+
+public class ChatSessionStaffDto
+{
+    public int MaPhienChat { get; set; }
+    public int MaNguoiDung { get; set; }
+    public int MaNhanVien { get; set; }
+    public DateTime ThoiGianBatDau { get; set; }
+    public DateTime? ThoiGianKetThuc { get; set; }
+    public int SoLuongTinNhan { get; set; }
+    public string? TinNhanCuoi { get; set; }
+    public DateTime? ThoiGianTinNhanCuoi { get; set; }
+}

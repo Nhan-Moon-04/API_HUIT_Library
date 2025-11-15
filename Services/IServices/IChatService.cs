@@ -27,4 +27,5 @@ public interface IChatService
 
     // Latest session with messages
     Task<ChatSessionWithMessagesDto?> GetLatestChatSessionWithMessagesAsync(int userId);
+    Task<ChatSessionWithMessagesDto?> GetLatestUserStaffChatAsync(int userId);
 }
