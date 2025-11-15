@@ -1,4 +1,4 @@
-// Add interface for chat service
+﻿// Add interface for chat service
 using HUIT_Library.DTOs.DTO;
 using HUIT_Library.DTOs.Request;
 using HUIT_Library.Models;
@@ -9,11 +9,15 @@ public interface IChatService
 {
     Task<TinNhan?> SendMessageAsync(int userId, SendMessageRequest request);
     Task<IEnumerable<MessageDto>> GetMessagesAsync(int maPhienChat);
+
+    // Regular session functionality
     Task<PhienChat?> CreateSessionAsync(int userId);
 
     // Bot functionality
     Task<PhienChat?> CreateBotSessionAsync(int userId, CreateBotSessionRequest request);
     Task<BotResponseDto?> SendMessageToBotAsync(int userId, SendMessageRequest request);
+
+    // Staff functionality
     Task<bool> RequestStaffAsync(int userId, RequestStaffRequest request);
 
     // Session info
@@ -28,4 +32,10 @@ public interface IChatService
     // Latest session with messages
     Task<ChatSessionWithMessagesDto?> GetLatestChatSessionWithMessagesAsync(int userId);
     Task<ChatSessionWithMessagesDto?> GetLatestUserStaffChatAsync(int userId);
+
+    // ✅ NEW: Lấy toàn bộ phiên chat giữa user và nhân viên
+    Task<IEnumerable<ChatSessionDto>> GetAllUserStaffSessionsAsync(int userId);
+
+    // Utility methods
+    Task<int> GetLastest_PhienChatUser(int userId);
 }

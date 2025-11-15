@@ -558,4 +558,53 @@ public class ChatController : ControllerBase
             });
         }
     }
+
+    /// <summary>
+    /// 📋 Lấy toàn bộ lịch sử phiên chat giữa User và Nhân viên
+    /// </summary>
+[Authorize]
+    [HttpGet("user/staff-sessions")]
+    public async Task<IActionResult> GetAllUserStaffSessions()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+        
+     if (!int.TryParse(userIdClaim, out var userId))
+     {
+    _logger.LogWarning("Invalid user ID claim when getting user-staff sessions: {UserIdClaim}", userIdClaim);
+            return Unauthorized(new { message = "Token không hợp lệ" });
+        }
+
+        try
+        {
+          _logger.LogInformation("Getting ALL user-staff sessions for user {UserId} ({UserName})", userId, userNameClaim);
+
+         var staffSessions = await _chatService.GetAllUserStaffSessionsAsync(userId);
+
+ return Ok(new
+     {
+              success = true,
+            userId = userId,
+           userName = userNameClaim,
+                data = new 
+     {
+            totalSessions = staffSessions.Count(),
+    sessions = staffSessions
+},
+       message = staffSessions.Any() 
+          ? $"Tìm thấy {staffSessions.Count()} phiên chat với nhân viên" 
+       : "Chưa có phiên chat nào với nhân viên"
+            });
+}
+        catch (Exception ex)
+        {
+ _logger.LogError(ex, "Error getting user-staff sessions for user {UserId}", userId);
+            return StatusCode(500, new
+       {
+         success = false,
+        message = "Lỗi hệ thống khi lấy lịch sử chat với nhân viên",
+             error = ex.Message
+            });
+     }
+    }
 }

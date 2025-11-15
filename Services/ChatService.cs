@@ -779,8 +779,48 @@ namespace HUIT_Library.Services
             }
         }
 
-        
+        /// <summary>
+        /// ✅ Lấy toàn bộ phiên chat giữa User và Nhân viên (để xem lịch sử)
+        /// </summary>
+        public async Task<IEnumerable<ChatSessionDto>> GetAllUserStaffSessionsAsync(int userId)
+        {
+            try
+            {
+                _logger.LogInformation("Getting ALL user-staff chat sessions for user {UserId}", userId);
 
+                var sessions = await _context.PhienChats
+                    .Where(p => p.MaNguoiDung == userId && p.CoBot == false) // Chỉ phiên User ↔ Nhân viên
+                    .OrderByDescending(p => p.ThoiGianBatDau)
+                    .Select(p => new ChatSessionDto
+                    {
+                        MaPhienChat = p.MaPhienChat,
+                        MaNguoiDung = p.MaNguoiDung,
+                        MaNhanVien = p.MaNhanVien,
+                        CoBot = p.CoBot,
+                        ThoiGianBatDau = p.ThoiGianBatDau ?? GetVietnamTime(),
+                        ThoiGianKetThuc = p.ThoiGianKetThuc,
+                        SoLuongTinNhan = _context.TinNhans.Count(t => t.MaPhienChat == p.MaPhienChat),
+                        TinNhanCuoi = _context.TinNhans
+                            .Where(t => t.MaPhienChat == p.MaPhienChat)
+                            .OrderByDescending(t => t.ThoiGianGui)
+                            .Select(t => t.NoiDung)
+                            .FirstOrDefault(),
+                        ThoiGianTinNhanCuoi = _context.TinNhans
+                            .Where(t => t.MaPhienChat == p.MaPhienChat)
+                            .OrderByDescending(t => t.ThoiGianGui)
+                            .Select(t => t.ThoiGianGui)
+                            .FirstOrDefault()
+                    })
+                    .ToListAsync();
 
+                _logger.LogInformation("Found {Count} user-staff chat sessions for user {UserId}", sessions.Count, userId);
+                return sessions;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting user-staff chat sessions for user {UserId}", userId);
+                return new List<ChatSessionDto>();
+            }
+        }
     }
 }
