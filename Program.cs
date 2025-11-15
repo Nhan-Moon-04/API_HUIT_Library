@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
+using HUIT_Library.Services.TaiNguyen.IServices;
+using HUIT_Library.Services.TaiNguyen.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -39,6 +41,7 @@ builder.Services.AddScoped<IViolationService, ViolationService>();
 builder.Services.AddScoped<IRoomUsageService, RoomUsageService>();
 builder.Services.AddScoped<IRoomService, RoomService>(); // Register Room service
 builder.Services.AddScoped<IAvailableRoomService, AvailableRoomService>(); // ✅ Add available room search service
+builder.Services.AddScoped<ITaiNguyenLoaiPhongServices, TaiNguyenLoaiPhongServices>(); // Register TaiNguyenLoaiPhong service
 
 // Register notification service
 builder.Services.AddScoped<INotificationService, NotificationService>();

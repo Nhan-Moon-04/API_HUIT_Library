@@ -53,7 +53,7 @@ namespace HUIT_Library.Services
         }
 
         // Map normalized BookingStatus back to DB value so updates write the correct legacy value
-  
+
         private string GetStatusName(BookingStatus status)
         {
             return status switch
@@ -63,7 +63,7 @@ namespace HUIT_Library.Services
                 BookingStatus.InUse => "Đang sử dụng",
                 BookingStatus.Rejected => "Từ chối",
                 BookingStatus.Cancelled => "Hủy",
-                BookingStatus.Used => "Đã sử dụng",
+                BookingStatus.Used => "Đã trả phòng",
                 _ => "Không xác định"
             };
         }
@@ -83,7 +83,7 @@ namespace HUIT_Library.Services
         }
 
         // Convert a DateTime that is provided in Vietnam local time (no offset) to UTC for storage
-     
+
 
         public async Task<(bool Success, string Message)> CreateBookingRequestAsync(int userId, CreateBookingRequest request)
         {
@@ -95,6 +95,25 @@ namespace HUIT_Library.Services
 
                 if (request.ThoiGianBatDau == default)
                     return (false, "Vui lòng chọn thời gian bắt đầu.");
+
+                // ✅ Kiểm tra số lượng tối thiểu dựa trên loại phòng
+                var loaiPhong = await _context.LoaiPhongs.FindAsync(request.MaLoaiPhong);
+                if (loaiPhong == null)
+                    return (false, "Loại phòng không tồn tại.");
+
+                // Kiểm tra số lượng với sức chứa phòng
+                int sucChuaToiDa = loaiPhong.SoLuongChoNgoi;
+                int soLuongToiThieu = sucChuaToiDa / 2; // 50% sức chứa
+
+                if (request.SoLuong < soLuongToiThieu)
+                {
+                    return (false, $"Số lượng người tham gia phải ít nhất {soLuongToiThieu} người (50% sức chứa phòng {sucChuaToiDa} người).");
+                }
+
+                if (request.SoLuong > sucChuaToiDa)
+                {
+                    return (false, $"Số lượng người tham gia không được vượt quá {sucChuaToiDa} người (sức chứa tối đa của phòng).");
+                }
 
                 var nowVn = GetVietnamTime();
 
@@ -112,13 +131,13 @@ namespace HUIT_Library.Services
                 // 3️⃣ Chuẩn bị dữ liệu cho DB
                 var startForDb = new DateTime(
                     request.ThoiGianBatDau.Year,
-           request.ThoiGianBatDau.Month,
+                    request.ThoiGianBatDau.Month,
                     request.ThoiGianBatDau.Day,
-               request.ThoiGianBatDau.Hour,
+                    request.ThoiGianBatDau.Hour,
                     request.ThoiGianBatDau.Minute,
-           request.ThoiGianBatDau.Second,
-              DateTimeKind.Unspecified
-            );
+                    request.ThoiGianBatDau.Second,
+                    DateTimeKind.Unspecified
+                );
 
                 var parameters = new DynamicParameters();
                 parameters.Add("@MaNguoiDung", userId);
@@ -156,8 +175,8 @@ namespace HUIT_Library.Services
                     if (inserted != null)
                         await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
 
-                    _logger.LogInformation("Successfully created booking for user {UserId}, booking ID {BookingId}",
-                             userId, inserted?.MaDangKy);
+                    _logger.LogInformation("Successfully created booking for user {UserId}, booking ID {BookingId}, participants: {SoLuong}",
+                             userId, inserted?.MaDangKy, request.SoLuong);
 
                     return (true, $"{resultMessage}");
                 }
@@ -670,24 +689,23 @@ namespace HUIT_Library.Services
                     // Status description
                     string statusDescription = normalizedStatus switch
                     {
-                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
-                        BookingStatus.Approved when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
-                        BookingStatus.Approved when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
-                        BookingStatus.Approved when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
-                        BookingStatus.Approved when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
-                        BookingStatus.InUse when minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút",
-                        BookingStatus.InUse when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
-                        _ => GetStatusName(normalizedStatus)
+                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt ({minutesUntilStart} phút nữa)" : "Đang chờ duyệt",
+                        BookingStatus.Approved => minutesUntilStart > 0 ? $"Đã duyệt, sẵn sàng bắt đầu trong {minutesUntilStart} phút" : "Đã duyệt",
+                        BookingStatus.InUse => "Đang sử dụng",
+                        BookingStatus.Rejected => "Đã từ chối",
+                        BookingStatus.Cancelled => "Đã hủy",
+                        BookingStatus.Used => "Đã sử dụng",
+                        _ => "Trạng thái không xác định"
                     };
 
                     return new CurrentBookingDto
                     {
                         MaDangKy = dk.MaDangKy,
-                        MaPhong = dk.MaPhong,
-                        TenPhong = p?.TenPhong ?? "Chưa phân phòng",
-                        TenLoaiPhong = loaiPhong?.TenLoaiPhong,
-                        ThoiGianBatDau = start,
-                        ThoiGianKetThuc = end,
+                        MaPhong = dk.MaPhong ?? 0,
+                        TenPhong = p != null ? p.TenPhong : "Chưa phân phòng",
+                        TenLoaiPhong = loaiPhong.TenLoaiPhong,
+                        ThoiGianBatDau = dk.ThoiGianBatDau,
+                        ThoiGianKetThuc = dk.ThoiGianKetThuc,
                         LyDo = dk.LyDo,
                         SoLuong = dk.SoLuong,
                         GhiChu = dk.GhiChu,
@@ -714,7 +732,5 @@ namespace HUIT_Library.Services
                 return new List<CurrentBookingDto>();
             }
         }
-
-
     }
 }
