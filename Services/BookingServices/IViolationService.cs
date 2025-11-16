@@ -19,11 +19,16 @@
         /// Lấy chi tiết vi phạm
         /// </summary>
         Task<ViolationDetailDto?> GetViolationDetailAsync(int userId, int maViPham);
+
+        /// <summary>
+        /// Lấy danh sách vi phạm của một phiếu đăng ký phòng
+/// </summary>
+        Task<List<BookingViolationDto>> GetBookingViolationsAsync(int userId, int maDangKy);
     }
 
     /// <summary>
     /// DTO cho thông tin vi phạm
-/// </summary>
+    /// </summary>
     public class ViolationDto
  {
         public int MaViPham { get; set; }
@@ -43,5 +48,17 @@
     {
  public string? GhiChu { get; set; }
         public string? NguoiLapBienBan { get; set; }
+    }
+
+    /// <summary>
+    /// DTO cho vi phạm của phiếu đăng ký - hiển thị sơ sơ
+    /// </summary>
+    public class BookingViolationDto
+    {
+     public int MaViPham { get; set; }
+        public string? TenViPham { get; set; }
+        public DateTime? NgayLap { get; set; }
+        public string? TrangThaiXuLy { get; set; }
+        public string? MoTaNgan { get; set; } // Mô tả ngắn gọn
     }
 }

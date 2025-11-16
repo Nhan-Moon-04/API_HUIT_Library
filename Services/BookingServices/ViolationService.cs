@@ -146,5 +146,62 @@ namespace HUIT_Library.Services.BookingServices
                 return null;
             }
         }
+
+        public async Task<List<BookingViolationDto>> GetBookingViolationsAsync(int userId, int maDangKy)
+        {
+            try
+            {
+                _logger.LogInformation("Getting violations for user {UserId}, booking {MaDangKy}", userId, maDangKy);
+
+                // Kiểm tra user có quyền xem booking này không
+                var booking = await _context.DangKyPhongs
+        .Where(dk => dk.MaDangKy == maDangKy && dk.MaNguoiDung == userId)
+        .FirstOrDefaultAsync();
+
+                if (booking == null)
+                {
+                    _logger.LogWarning("Booking {MaDangKy} not found for user {UserId}", maDangKy, userId);
+                    return new List<BookingViolationDto>();
+                }
+
+                // Lấy danh sách vi phạm của phiếu đăng ký này
+                var violations = await (from v in _context.ViPhams
+                                        join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                        join qd in _context.QuyDinhViPhams on v.MaQuyDinh equals qd.MaQuyDinh into qdGroup
+                                        from quyDinh in qdGroup.DefaultIfEmpty()
+                                        where sd.MaDangKy == maDangKy
+                                        orderby v.NgayLap descending
+                                        select new
+                                        {
+                                            MaViPham = v.MaViPham,
+                                            TenViPham = quyDinh != null ? quyDinh.TenViPham : "Không xác định",
+                                            NgayLap = v.NgayLap,
+                                            TrangThaiXuLy = v.TrangThaiXuLy,
+                                            MoTa = quyDinh != null ? quyDinh.MoTa : null
+                                        }).ToListAsync();
+
+                // Xử lý mô tả ngắn ở phía C#
+                var result = violations.Select(v => new BookingViolationDto
+                {
+                    MaViPham = v.MaViPham,
+                    TenViPham = v.TenViPham,
+                    NgayLap = v.NgayLap,
+                    TrangThaiXuLy = v.TrangThaiXuLy,
+                    MoTaNgan = !string.IsNullOrEmpty(v.MoTa) && v.MoTa.Length > 100
+              ? v.MoTa.Substring(0, 100) + "..."
+                : v.MoTa
+                }).ToList();
+
+                _logger.LogInformation("Found {Count} violations for booking {MaDangKy}, user {UserId}",
+                          result.Count, maDangKy, userId);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting violations for booking {MaDangKy}, user {UserId}", maDangKy, userId);
+                return new List<BookingViolationDto>();
+            }
+        }
     }
 }

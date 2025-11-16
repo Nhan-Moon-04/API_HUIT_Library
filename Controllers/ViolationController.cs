@@ -89,33 +89,63 @@ catch (Exception ex)
         }
 
         /// <summary>
-        /// L?y chi ti?t vi ph?m
+ /// L?y chi ti?t vi ph?m
+   /// </summary>
+      [HttpGet("details/{maViPham}")]
+   public async Task<IActionResult> GetViolationDetail(int maViPham)
+      {
+ try
+      {
+         var userId = GetCurrentUserId();
+     var result = await _violationService.GetViolationDetailAsync(userId, maViPham);
+
+      if (result == null)
+    {
+       return NotFound(new { success = false, message = "Không tìm th?y thông tin vi ph?m." });
+         }
+
+          return Ok(new { success = true, data = result });
+     }
+       catch (UnauthorizedAccessException ex)
+       {
+     _logger.LogWarning(ex, "Unauthorized access in GetViolationDetail");
+ return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
+    }
+          catch (Exception ex)
+     {
+            _logger.LogError(ex, "Error in GetViolationDetail for violation {MaViPham}", maViPham);
+     return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
+ }
+ }
+
+        /// <summary>
+   /// L?y danh sách vi ph?m c?a m?t phi?u ??ng ký phòng
         /// </summary>
-     [HttpGet("details/{maViPham}")]
-        public async Task<IActionResult> GetViolationDetail(int maViPham)
-{
+        [HttpGet("booking/{maDangKy}")]
+        public async Task<IActionResult> GetBookingViolations(int maDangKy)
+ {
             try
-     {
-  var userId = GetCurrentUserId();
-      var result = await _violationService.GetViolationDetailAsync(userId, maViPham);
+            {
+    var userId = GetCurrentUserId();
+    var result = await _violationService.GetBookingViolationsAsync(userId, maDangKy);
 
-if (result == null)
-          {
-    return NotFound(new { success = false, message = "Không tìm th?y thông tin vi ph?m." });
+            return Ok(new { 
+            success = true, 
+            data = result,
+              count = result.Count,
+           message = result.Count > 0 ? $"Tìm th?y {result.Count} vi ph?m" : "Không có vi ph?m nào"
+       });
   }
-
-            return Ok(new { success = true, data = result });
+            catch (UnauthorizedAccessException ex)
+ {
+             _logger.LogWarning(ex, "Unauthorized access in GetBookingViolations");
+                return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
         }
-   catch (UnauthorizedAccessException ex)
-        {
-      _logger.LogWarning(ex, "Unauthorized access in GetViolationDetail");
-              return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
+ catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in GetBookingViolations for booking {MaDangKy}", maDangKy);
+      return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
             }
-            catch (Exception ex)
-     {
-         _logger.LogError(ex, "Error in GetViolationDetail for violation {MaViPham}", maViPham);
-           return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
-     }
-     }
+      }
     }
 }
