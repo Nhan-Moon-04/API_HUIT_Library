@@ -87,7 +87,7 @@ namespace HUIT_Library.Services.BookingServices
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
-                            where dk.MaNguoiDung == userId && (dk.MaTrangThai == 3 || dk.MaTrangThai == 5 || dk.MaTrangThai == 7)
+                            where dk.MaNguoiDung == userId && (dk.MaTrangThai == DB_REJECTED || dk.MaTrangThai == DB_CANCELLED || dk.MaTrangThai == DB_USED)
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
                             {
@@ -115,6 +115,9 @@ namespace HUIT_Library.Services.BookingServices
                 .Skip((pageNumber - 1) * pageSize)
                           .Take(pageSize)
                          .ToListAsync();
+
+                // ✅ Thêm thông tin vi phạm
+                await EnhanceBookingHistoryWithViolationsAsync(result);
 
                 _logger.LogInformation("Found {Count} booking history records for user {UserId}", result.Count, userId);
                 return result;
@@ -217,6 +220,9 @@ namespace HUIT_Library.Services.BookingServices
                        };
                    }).ToList();
 
+                // ✅ Thêm thông tin vi phạm
+                await EnhanceCurrentBookingWithViolationsAsync(result);
+
                 _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
                 return result;
             }
@@ -306,13 +312,15 @@ namespace HUIT_Library.Services.BookingServices
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
                             where dk.MaNguoiDung == userId &&
-                         (dk.MaTrangThai == 3 || dk.MaTrangThai == 5 || dk.MaTrangThai == 7) &&
+                           // ✅ Sửa lại: chỉ tìm trong lịch sử (đã thuê, trả, hủy)
+                           (dk.MaTrangThai == DB_REJECTED || dk.MaTrangThai == DB_CANCELLED || dk.MaTrangThai == DB_USED) &&
                         (
                                (p != null && p.TenPhong.ToLower().Contains(lowerSearchTerm)) ||
                              (loaiPhong.TenLoaiPhong != null && loaiPhong.TenLoaiPhong.ToLower().Contains(lowerSearchTerm)) ||
                           (dk.LyDo != null && dk.LyDo.ToLower().Contains(lowerSearchTerm)) ||
                       (tt != null && tt.TenTrangThai.ToLower().Contains(lowerSearchTerm)) ||
-                          dk.MaDangKy.ToString().Contains(searchTerm)
+                          dk.MaDangKy.ToString().Contains(searchTerm) ||
+ (dk.GhiChu != null && dk.GhiChu.ToLower().Contains(lowerSearchTerm))
                               )
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
@@ -341,8 +349,11 @@ namespace HUIT_Library.Services.BookingServices
                       .Take(pageSize)
              .ToListAsync();
 
+                // ✅ Thêm thông tin vi phạm
+                await EnhanceBookingHistoryWithViolationsAsync(result);
+
                 _logger.LogInformation("Found {Count} booking records for search term '{SearchTerm}', user {UserId}",
-         result.Count, searchTerm, userId);
+                     result.Count, searchTerm, userId);
 
                 return result;
             }
@@ -350,6 +361,114 @@ namespace HUIT_Library.Services.BookingServices
             {
                 _logger.LogError(ex, "Error searching booking history for user {UserId}, term '{SearchTerm}'", userId, searchTerm);
                 return new List<BookingHistoryDto>();
+            }
+        }
+
+        // ✅ Helper methods để thêm thông tin vi phạm
+        private async Task EnhanceBookingHistoryWithViolationsAsync(List<BookingHistoryDto> bookings)
+        {
+            try
+            {
+                var bookingIds = bookings.Select(b => b.MaDangKy).ToList();
+
+                // Lấy tất cả vi phạm cho các booking này
+                var violations = await (from v in _context.ViPhams
+                                        join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                        join qd in _context.QuyDinhViPhams on v.MaQuyDinh equals qd.MaQuyDinh into qdGroup
+                                        from quyDinh in qdGroup.DefaultIfEmpty()
+                                        where bookingIds.Contains(sd.MaDangKy)
+                                        select new
+                                        {
+                                            MaDangKy = sd.MaDangKy,
+                                            MaViPham = v.MaViPham,
+                                            TenViPham = quyDinh != null ? quyDinh.TenViPham : "Không xác định",
+                                            NgayLap = v.NgayLap,
+                                            TrangThaiXuLy = v.TrangThaiXuLy
+                                        }).ToListAsync();
+
+                // Group vi phạm theo booking
+                var violationsByBooking = violations.GroupBy(v => v.MaDangKy).ToDictionary(
+                 g => g.Key,
+                g => g.ToList()
+                    );
+
+                // Cập nhật thông tin vi phạm cho từng booking
+                foreach (var booking in bookings)
+                {
+                    if (violationsByBooking.TryGetValue(booking.MaDangKy, out var bookingViolations))
+                    {
+                        booking.CoBienBan = true;
+                        booking.SoLuongBienBan = bookingViolations.Count;
+                        booking.DanhSachViPham = bookingViolations.Select(v => new ViolationSummaryDto
+                        {
+                            MaViPham = v.MaViPham,
+                            TenViPham = v.TenViPham,
+                            NgayLap = v.NgayLap,
+                            TrangThaiXuLy = v.TrangThaiXuLy
+                        }).ToList();
+                    }
+                    else
+                    {
+                        booking.CoBienBan = false;
+                        booking.SoLuongBienBan = 0;
+                        booking.DanhSachViPham = new List<ViolationSummaryDto>();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing booking history with violations");
+                // Đảm bảo không crash API, chỉ log warning
+                foreach (var booking in bookings)
+                {
+                    booking.CoBienBan = false;
+                    booking.SoLuongBienBan = 0;
+                    booking.DanhSachViPham = new List<ViolationSummaryDto>();
+                }
+            }
+        }
+
+        private async Task EnhanceCurrentBookingWithViolationsAsync(List<CurrentBookingDto> bookings)
+        {
+            try
+            {
+                var bookingIds = bookings.Select(b => b.MaDangKy).ToList();
+
+                // Lấy số lượng vi phạm cho các booking này
+                var violationCounts = await (from v in _context.ViPhams
+                                             join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                             where bookingIds.Contains(sd.MaDangKy)
+                                             group sd by sd.MaDangKy into g
+                                             select new
+                                             {
+                                                 MaDangKy = g.Key,
+                                                 Count = g.Count()
+                                             }).ToDictionaryAsync(x => x.MaDangKy, x => x.Count);
+
+                // Cập nhật thông tin vi phạm cho từng booking
+                foreach (var booking in bookings)
+                {
+                    if (violationCounts.TryGetValue(booking.MaDangKy, out var violationCount))
+                    {
+                        booking.CoBienBan = true;
+                        booking.SoLuongBienBan = violationCount;
+                    }
+                    else
+                    {
+                        booking.CoBienBan = false;
+                        booking.SoLuongBienBan = 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing current booking with violations");
+                // Đảm bảo không crash API, chỉ log warning
+                foreach (var booking in bookings)
+                {
+                    booking.CoBienBan = false;
+                    booking.SoLuongBienBan = 0;
+                }
             }
         }
     }

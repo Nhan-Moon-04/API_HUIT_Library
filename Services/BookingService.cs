@@ -524,7 +524,7 @@ namespace HUIT_Library.Services
    📍 Đánh giá phòng
     </a>
            <a href='{reviewLink}&type=service' style='display: inline-block; background: #17a2b8; color: white; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
-   🛎️ Đánh giá dịch vụ  
+   🛎️ Đ đánh giá dịch vụ  
             </a>
    <a href='{reviewLink}&type=staff' style='display: inline-block; background: #ffc107; color: #212529; padding: 12px 20px; text-decoration: none; border-radius: 25px; margin: 5px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>
         👥 Đánh giá nhân viên
@@ -625,7 +625,7 @@ namespace HUIT_Library.Services
                 _logger.LogInformation("Getting booking history for user {UserId}, page {PageNumber}, size {PageSize}",
       userId, pageNumber, pageSize);
 
-                // Lấy lịch sử đặt phòng của user (bao gồm đã từ chối(4), huỷ(5), đã sử dụng(6))
+                // Lấy lịch sử đặt phòng của user (bao gồm đã từ chối(3), huỷ(5), đã sử dụng(6))
                 var query = from dk in _context.DangKyPhongs
                             join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
                             from p in phongGroup.DefaultIfEmpty()
@@ -660,12 +660,15 @@ namespace HUIT_Library.Services
                 // Phân trang
                 var totalCount = await query.CountAsync();
                 var result = await query
-              .Skip((pageNumber - 1) * pageSize)
-                .Take(pageSize)
-                     .ToListAsync();
+                    .Skip((pageNumber - 1) * pageSize)
+          .Take(pageSize)
+             .ToListAsync();
+
+                // ✅ Thêm thông tin vi phạm cho mỗi booking
+                await EnhanceBookingHistoryWithViolationsAsync(result);
 
                 _logger.LogInformation("Found {Count} booking history records for user {UserId} (total: {Total})",
-                result.Count, userId, totalCount);
+              result.Count, userId, totalCount);
 
                 return result;
             }
@@ -695,82 +698,85 @@ namespace HUIT_Library.Services
                             join trangThai in _context.TrangThaiDangKies on dk.MaTrangThai equals trangThai.MaTrangThai into trangThaiGroup
                             from tt in trangThaiGroup.DefaultIfEmpty()
                             where dk.MaNguoiDung == userId && (
-                                dk.MaTrangThai == DB_INUSE ||
-                         ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) &&
-                             dk.ThoiGianKetThuc >= nowVn)
-                               )
+                       dk.MaTrangThai == DB_INUSE ||
+                       ((dk.MaTrangThai == DB_PENDING || dk.MaTrangThai == DB_APPROVED) &&
+                      dk.ThoiGianKetThuc >= nowVn)
+                    )
                             orderby dk.ThoiGianBatDau
                             select new { dk, p, loaiPhong, tt };
 
                 var bookings = await query.ToListAsync();
 
                 var result = bookings.Select(item =>
-                {
-                    var dk = item.dk;
-                    var p = item.p;
-                    var loaiPhong = item.loaiPhong;
-                    var tt = item.tt;
+                     {
+                         var dk = item.dk;
+                         var p = item.p;
+                         var loaiPhong = item.loaiPhong;
+                         var tt = item.tt;
 
-                    var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
+                         var normalizedStatus = MapDbToStatus(dk.MaTrangThai);
 
-                    // ❌ KHÔNG convert UTC → VN nữa
-                    var start = dk.ThoiGianBatDau;
-                    var end = dk.ThoiGianKetThuc;
+                         // ❌ KHÔNG convert UTC → VN nữa
+                         var start = dk.ThoiGianBatDau;
+                         var end = dk.ThoiGianKetThuc;
 
-                    // Tính toán thời gian
-                    var minutesUntilStart = (int)(start - nowVn).TotalMinutes;
-                    var minutesRemaining = (int)(end - nowVn).TotalMinutes;
+                         // Tính toán thời gian
+                         var minutesUntilStart = (int)(start - nowVn).TotalMinutes;
+                         var minutesRemaining = (int)(end - nowVn).TotalMinutes;
 
-                    // Actions với logic mới
-                    var canStart = normalizedStatus == BookingStatus.Approved &&
-                        minutesUntilStart <= 15 && minutesUntilStart >= -5;
+                         // Actions với logic mới
+                         var canStart = normalizedStatus == BookingStatus.Approved &&
+            minutesUntilStart <= 15 && minutesUntilStart >= -5;
 
-                    var canExtend = normalizedStatus == BookingStatus.InUse &&
-                     minutesRemaining > 15 && nowVn >= start && nowVn <= end;
+                         var canExtend = normalizedStatus == BookingStatus.InUse &&
+             minutesRemaining > 15 && nowVn >= start && nowVn <= end;
 
-                    var canComplete = normalizedStatus == BookingStatus.InUse;
+                         var canComplete = normalizedStatus == BookingStatus.InUse;
 
-                    // Status description với trạng thái mới
-                    string statusDescription = normalizedStatus switch
-                    {
-                        BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
-                        BookingStatus.Approved when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
-                        BookingStatus.Approved when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
-                        BookingStatus.Approved when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
-                        BookingStatus.Approved when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
-                        BookingStatus.InUse when minutesRemaining > 15 => $"Đang sử dụng - Còn {minutesRemaining} phút (có thể gia hạn)",
-                        BookingStatus.InUse when minutesRemaining <= 15 && minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút (không thể gia hạn)",
-                        BookingStatus.InUse when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
-                        BookingStatus.Rejected => "Đã từ chối",
-                        BookingStatus.Cancelled => "Đã hủy",
-                        BookingStatus.Used => "Đã trả phòng",
-                        _ => GetStatusName(normalizedStatus)
-                    };
+                         // Status description với trạng thái mới
+                         string statusDescription = normalizedStatus switch
+                         {
+                             BookingStatus.Pending => minutesUntilStart > 0 ? $"Chờ duyệt - Bắt đầu sau {minutesUntilStart} phút" : "Chờ duyệt - Đã đến giờ",
+                             BookingStatus.Approved when minutesUntilStart > 15 => $"Đã duyệt - Có thể checkin sau {minutesUntilStart - 15} phút",
+                             BookingStatus.Approved when minutesUntilStart <= 15 && minutesUntilStart > 0 => "Đã duyệt - Có thể checkin ngay",
+                             BookingStatus.Approved when minutesUntilStart <= 0 && minutesRemaining > 0 => "Đã duyệt - Đã đến giờ, có thể checkin",
+                             BookingStatus.Approved when minutesRemaining <= 0 => "Đã duyệt - Đã quá giờ",
+                             BookingStatus.InUse when minutesRemaining > 15 => $"Đang sử dụng - Còn {minutesRemaining} phút (có thể gia hạn)",
+                             BookingStatus.InUse when minutesRemaining <= 15 && minutesRemaining > 0 => $"Đang sử dụng - Còn {minutesRemaining} phút (không thể gia hạn)",
+                             BookingStatus.InUse when minutesRemaining <= 0 => "Đang sử dụng - Đã quá giờ, cần trả phòng",
+                             BookingStatus.Rejected => "Đã từ chối",
+                             BookingStatus.Cancelled => "Đã hủy",
+                             BookingStatus.Used => "Đã trả phòng",
+                             _ => GetStatusName(normalizedStatus)
+                         };
 
-                    return new CurrentBookingDto
-                    {
-                        MaDangKy = dk.MaDangKy,
-                        MaPhong = dk.MaPhong ?? 0,
-                        TenPhong = p != null ? p.TenPhong : "Chưa phân phòng",
-                        TenLoaiPhong = loaiPhong.TenLoaiPhong,
-                        ThoiGianBatDau = dk.ThoiGianBatDau,
-                        ThoiGianKetThuc = dk.ThoiGianKetThuc,
-                        LyDo = dk.LyDo,
-                        SoLuong = dk.SoLuong,
-                        GhiChu = dk.GhiChu,
-                        MaTrangThai = dk.MaTrangThai ?? 0,
-                        TenTrangThai = GetStatusName(normalizedStatus),
-                        NgayDuyet = dk.NgayDuyet,
-                        NgayMuon = dk.NgayMuon,
+                         return new CurrentBookingDto
+                         {
+                             MaDangKy = dk.MaDangKy,
+                             MaPhong = dk.MaPhong ?? 0,
+                             TenPhong = p != null ? p.TenPhong : "Chưa phân phòng",
+                             TenLoaiPhong = loaiPhong.TenLoaiPhong,
+                             ThoiGianBatDau = dk.ThoiGianBatDau,
+                             ThoiGianKetThuc = dk.ThoiGianKetThuc,
+                             LyDo = dk.LyDo,
+                             SoLuong = dk.SoLuong,
+                             GhiChu = dk.GhiChu,
+                             MaTrangThai = dk.MaTrangThai ?? 0,
+                             TenTrangThai = GetStatusName(normalizedStatus),
+                             NgayDuyet = dk.NgayDuyet,
+                             NgayMuon = dk.NgayMuon,
 
-                        CanStart = canStart,
-                        CanExtend = canExtend,
-                        CanComplete = canComplete,
-                        StatusDescription = statusDescription,
-                        MinutesUntilStart = Math.Max(0, minutesUntilStart),
-                        MinutesRemaining = Math.Max(0, minutesRemaining)
-                    };
-                }).ToList();
+                             CanStart = canStart,
+                             CanExtend = canExtend,
+                             CanComplete = canComplete,
+                             StatusDescription = statusDescription,
+                             MinutesUntilStart = Math.Max(0, minutesUntilStart),
+                             MinutesRemaining = Math.Max(0, minutesRemaining)
+                         };
+                     }).ToList();
+
+                // ✅ Thêm thông tin vi phạm cho mỗi booking
+                await EnhanceCurrentBookingWithViolationsAsync(result);
 
                 _logger.LogInformation("Found {Count} current bookings for user {UserId}", result.Count, userId);
                 return result;
@@ -779,6 +785,114 @@ namespace HUIT_Library.Services
             {
                 _logger.LogError(ex, "Error getting current bookings for user {UserId}", userId);
                 return new List<CurrentBookingDto>();
+            }
+        }
+
+        // ✅ Helper methods để thêm thông tin vi phạm
+        private async Task EnhanceBookingHistoryWithViolationsAsync(List<BookingHistoryDto> bookings)
+        {
+            try
+            {
+                var bookingIds = bookings.Select(b => b.MaDangKy).ToList();
+
+                // Lấy tất cả vi phạm cho các booking này
+                var violations = await (from v in _context.ViPhams
+                                        join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                        join qd in _context.QuyDinhViPhams on v.MaQuyDinh equals qd.MaQuyDinh into qdGroup
+                                        from quyDinh in qdGroup.DefaultIfEmpty()
+                                        where bookingIds.Contains(sd.MaDangKy)
+                                        select new
+                                        {
+                                            MaDangKy = sd.MaDangKy,
+                                            MaViPham = v.MaViPham,
+                                            TenViPham = quyDinh != null ? quyDinh.TenViPham : "Không xác định",
+                                            NgayLap = v.NgayLap,
+                                            TrangThaiXuLy = v.TrangThaiXuLy
+                                        }).ToListAsync();
+
+                // Group vi phạm theo booking
+                var violationsByBooking = violations.GroupBy(v => v.MaDangKy).ToDictionary(
+                        g => g.Key,
+                g => g.ToList()
+                 );
+
+                // Cập nhật thông tin vi phạm cho từng booking
+                foreach (var booking in bookings)
+                {
+                    if (violationsByBooking.TryGetValue(booking.MaDangKy, out var bookingViolations))
+                    {
+                        booking.CoBienBan = true;
+                        booking.SoLuongBienBan = bookingViolations.Count;
+                        booking.DanhSachViPham = bookingViolations.Select(v => new ViolationSummaryDto
+                        {
+                            MaViPham = v.MaViPham,
+                            TenViPham = v.TenViPham,
+                            NgayLap = v.NgayLap,
+                            TrangThaiXuLy = v.TrangThaiXuLy
+                        }).ToList();
+                    }
+                    else
+                    {
+                        booking.CoBienBan = false;
+                        booking.SoLuongBienBan = 0;
+                        booking.DanhSachViPham = new List<ViolationSummaryDto>();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing booking history with violations");
+                // Đảm bảo không crash API, chỉ log warning
+                foreach (var booking in bookings)
+                {
+                    booking.CoBienBan = false;
+                    booking.SoLuongBienBan = 0;
+                    booking.DanhSachViPham = new List<ViolationSummaryDto>();
+                }
+            }
+        }
+
+        private async Task EnhanceCurrentBookingWithViolationsAsync(List<CurrentBookingDto> bookings)
+        {
+            try
+            {
+                var bookingIds = bookings.Select(b => b.MaDangKy).ToList();
+
+                // Lấy số lượng vi phạm cho các booking này
+                var violationCounts = await (from v in _context.ViPhams
+                                             join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                             where bookingIds.Contains(sd.MaDangKy)
+                                             group sd by sd.MaDangKy into g
+                                             select new
+                                             {
+                                                 MaDangKy = g.Key,
+                                                 Count = g.Count()
+                                             }).ToDictionaryAsync(x => x.MaDangKy, x => x.Count);
+
+                // Cập nhật thông tin vi phạm cho từng booking
+                foreach (var booking in bookings)
+                {
+                    if (violationCounts.TryGetValue(booking.MaDangKy, out var violationCount))
+                    {
+                        booking.CoBienBan = true;
+                        booking.SoLuongBienBan = violationCount;
+                    }
+                    else
+                    {
+                        booking.CoBienBan = false;
+                        booking.SoLuongBienBan = 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing current booking with violations");
+                // Đảm bảo không crash API, chỉ log warning
+                foreach (var booking in bookings)
+                {
+                    booking.CoBienBan = false;
+                    booking.SoLuongBienBan = 0;
+                }
             }
         }
     }

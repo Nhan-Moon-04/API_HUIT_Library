@@ -19,5 +19,15 @@ public class BookingHistoryDto
       public DateOnly? NgayMuon { get; set; }
     public string? TinhTrangPhong { get; set; }
   public string? GhiChuSuDung { get; set; }
+public bool CoBienBan { get; set; }
+public int SoLuongBienBan { get; set; }
+public List<ViolationSummaryDto>? DanhSachViPham { get; set; }
     }
+    public class ViolationSummaryDto
+{
+    public int MaViPham { get; set; }
+    public string? TenViPham { get; set; }
+    public DateTime? NgayLap { get; set; }
+    public string? TrangThaiXuLy { get; set; }
+}
 }

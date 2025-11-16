@@ -20,8 +20,12 @@ public int? SoLuong { get; set; }
         public bool CanStart { get; set; } // Có th? b?t ??u s? d?ng không
         public bool CanExtend { get; set; } // Có th? gia h?n không
         public bool CanComplete { get; set; } // Có th? tr? phòng không
-        public string StatusDescription { get; set; } = string.Empty;
+        public string StatusDescription { get; set; } = string.Empty; // Mô t? tr?ng thái chi ti?t
      public int MinutesUntilStart { get; set; } // S? phút ??n khi b?t ??u
      public int MinutesRemaining { get; set; } // S? phút còn l?i
+
+        // ? Thêm thông tin vi ph?m
+        public bool CoBienBan { get; set; }
+        public int SoLuongBienBan { get; set; }
     }
 }

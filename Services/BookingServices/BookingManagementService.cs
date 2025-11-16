@@ -42,6 +42,25 @@ namespace HUIT_Library.Services.BookingServices
                 if (request.ThoiGianBatDau == default)
                     return (false, "Vui lòng chọn thời gian bắt đầu.");
 
+                // ✅ Kiểm tra số lượng tối thiểu dựa trên loại phòng
+                var loaiPhong = await _context.LoaiPhongs.FindAsync(request.MaLoaiPhong);
+                if (loaiPhong == null)
+                    return (false, "Loại phòng không tồn tại.");
+
+                // Kiểm tra số lượng với sức chứa phòng
+                int sucChuaToiDa = loaiPhong.SoLuongChoNgoi;
+                int soLuongToiThieu = sucChuaToiDa / 2; // 50% sức chứa
+
+                if (request.SoLuong < soLuongToiThieu)
+                {
+                    return (false, $"Số lượng người tham gia phải ít nhất {soLuongToiThieu} người (50% sức chứa phòng {sucChuaToiDa} người).");
+                }
+
+                if (request.SoLuong > sucChuaToiDa)
+                {
+                    return (false, $"Số lượng người tham gia không được vượt quá {sucChuaToiDa} người (sức chứa tối đa của phòng).");
+                }
+
                 var nowVn = GetVietnamTime();
 
                 // 2️⃣ Kiểm tra vi phạm gần đây
@@ -102,8 +121,8 @@ namespace HUIT_Library.Services.BookingServices
                     if (inserted != null)
                         await CreateNotificationForBookingAsync(userId, request, inserted.MaDangKy);
 
-                    _logger.LogInformation("Successfully created booking for user {UserId}, booking ID {BookingId}",
-                userId, inserted?.MaDangKy);
+                    _logger.LogInformation("Successfully created booking for user {UserId}, booking ID {BookingId}, participants: {SoLuong}",
+                userId, inserted?.MaDangKy, request.SoLuong);
 
                     return (true, resultMessage);
                 }
