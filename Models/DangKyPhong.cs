@@ -31,6 +31,8 @@ public partial class DangKyPhong
 
     public string? GhiChu { get; set; }
 
+    public virtual ICollection<DanhGium> DanhGia { get; set; } = new List<DanhGium>();
+
     public virtual LoaiPhong MaLoaiPhongNavigation { get; set; } = null!;
 
     public virtual NguoiDung MaNguoiDungNavigation { get; set; } = null!;

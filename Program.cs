@@ -43,6 +43,9 @@ builder.Services.AddScoped<IRoomService, RoomService>(); // Register Room servic
 builder.Services.AddScoped<IAvailableRoomService, AvailableRoomService>(); // ✅ Add available room search service
 builder.Services.AddScoped<ITaiNguyenLoaiPhongServices, TaiNguyenLoaiPhongServices>(); // Register TaiNguyenLoaiPhong service
 
+// ✅ Register Rating service
+builder.Services.AddScoped<IRatingService, RatingService>();
+
 // Register notification service
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IChatService, ChatService>();

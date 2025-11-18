@@ -812,9 +812,9 @@ namespace HUIT_Library.Services
 
                 // Group vi phạm theo booking
                 var violationsByBooking = violations.GroupBy(v => v.MaDangKy).ToDictionary(
-                        g => g.Key,
-                g => g.ToList()
-                 );
+               g => g.Key,
+                 g => g.ToList()
+              );
 
                 // Cập nhật thông tin vi phạm cho từng booking
                 foreach (var booking in bookings)
@@ -838,6 +838,9 @@ namespace HUIT_Library.Services
                         booking.DanhSachViPham = new List<ViolationSummaryDto>();
                     }
                 }
+
+                // ✅ Thêm thông tin đánh giá
+                await EnhanceBookingHistoryWithRatingsAsync(bookings);
             }
             catch (Exception ex)
             {
@@ -848,6 +851,103 @@ namespace HUIT_Library.Services
                     booking.CoBienBan = false;
                     booking.SoLuongBienBan = 0;
                     booking.DanhSachViPham = new List<ViolationSummaryDto>();
+                }
+            }
+        }
+
+        // ✅ Helper method để thêm thông tin đánh giá
+        private async Task EnhanceBookingHistoryWithRatingsAsync(List<BookingHistoryDto> bookings)
+        {
+            try
+            {
+                var nowVn = GetVietnamTime();
+
+                foreach (var booking in bookings)
+                {
+                    // Chỉ xử lý cho booking đã hoàn thành (trạng thái = 6)
+                    if (booking.MaTrangThai != DB_USED)
+                    {
+                        booking.DaDanhGia = false;
+                        booking.CoTheDanhGia = false;
+                        booking.TrangThaiDanhGia = "Không thể đánh giá";
+                        continue;
+                    }
+
+                    // Kiểm tra đã có đánh giá chưa
+                    var existingRating = await _context.DanhGia
+                   .FirstOrDefaultAsync(d => d.MaDangKy == booking.MaDangKy &&
+                    d.MaPhong == booking.MaPhong);
+
+                    if (existingRating != null)
+                    {
+                        // Đã có đánh giá
+                        booking.DaDanhGia = true;
+                        booking.MaDanhGia = existingRating.MaDanhGia;
+                        booking.DiemDanhGia = existingRating.DiemDanhGia;
+                        booking.CoTheDanhGia = false;
+                        booking.TrangThaiDanhGia = "Xem đánh giá";
+                        booking.SoNgayConLaiDeDanhGia = 0;
+                    }
+                    else
+                    {
+                        // Chưa có đánh giá - kiểm tra thời gian
+                        DateTime? completionTime = null;
+
+                        // ✅ Ưu tiên GioKetThucThucTe, fallback về ThoiGianKetThuc
+                        if (booking.GioKetThucThucTe.HasValue)
+                        {
+                            completionTime = booking.GioKetThucThucTe.Value;
+                        }
+                        else
+                        {
+                            // Fallback: Dùng ThoiGianKetThuc của booking
+                            completionTime = booking.ThoiGianKetThuc;
+                            _logger.LogWarning("Booking {MaDangKy} missing GioKetThucThucTe, using ThoiGianKetThuc", booking.MaDangKy);
+                        }
+
+                        if (completionTime.HasValue)
+                        {
+                            var daysSinceCompleted = (nowVn - completionTime.Value).TotalDays;
+                            var daysRemaining = 7 - (int)Math.Ceiling(daysSinceCompleted);
+
+                            if (daysSinceCompleted <= 7)
+                            {
+                                // Còn trong thời hạn đánh giá
+                                booking.DaDanhGia = false;
+                                booking.CoTheDanhGia = true;
+                                booking.TrangThaiDanhGia = "Đánh giá ngay";
+                                booking.SoNgayConLaiDeDanhGia = Math.Max(0, daysRemaining);
+                            }
+                            else
+                            {
+                                // Hết hạn đánh giá
+                                booking.DaDanhGia = false;
+                                booking.CoTheDanhGia = false;
+                                booking.TrangThaiDanhGia = "Hết hạn đánh giá";
+                                booking.SoNgayConLaiDeDanhGia = 0;
+                            }
+                        }
+                        else
+                        {
+                            // Không có thời gian kết thúc
+                            booking.DaDanhGia = false;
+                            booking.CoTheDanhGia = false;
+                            booking.TrangThaiDanhGia = "Lỗi dữ liệu";
+                            booking.SoNgayConLaiDeDanhGia = 0;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing booking history with ratings");
+                // Đảm bảo không crash API
+                foreach (var booking in bookings)
+                {
+                    booking.DaDanhGia = false;
+                    booking.CoTheDanhGia = false;
+                    booking.TrangThaiDanhGia = "Lỗi kiểm tra";
+                    booking.SoNgayConLaiDeDanhGia = 0;
                 }
             }
         }
@@ -882,6 +982,18 @@ namespace HUIT_Library.Services
                         booking.CoBienBan = false;
                         booking.SoLuongBienBan = 0;
                     }
+
+                    // ✅ Kiểm tra trạng thái đánh giá (chỉ cho booking đã completed)
+                    if (booking.MaTrangThai == DB_USED && booking.MaPhong.HasValue)
+                    {
+                        await EnhanceCurrentBookingWithRatingAsync(booking);
+                    }
+                    else
+                    {
+                        booking.DaDanhGia = false;
+                        booking.CoTheDanhGia = false;
+                        booking.TrangThaiDanhGia = null;
+                    }
                 }
             }
             catch (Exception ex)
@@ -892,8 +1004,84 @@ namespace HUIT_Library.Services
                 {
                     booking.CoBienBan = false;
                     booking.SoLuongBienBan = 0;
+                    booking.DaDanhGia = false;
+                    booking.CoTheDanhGia = false;
+                    booking.TrangThaiDanhGia = null;
                 }
             }
         }
-    }
-}
+
+        // ✅ Helper method để kiểm tra đánh giá cho current booking
+        private async Task EnhanceCurrentBookingWithRatingAsync(CurrentBookingDto booking)
+        {
+            try
+            {
+                // Kiểm tra đã có đánh giá chưa
+                var existingRating = await _context.DanhGia
+                   .FirstOrDefaultAsync(d => d.MaDangKy == booking.MaDangKy &&
+              d.MaPhong == booking.MaPhong);
+
+                if (existingRating != null)
+                {
+                    // Đã có đánh giá
+                    booking.DaDanhGia = true;
+                    booking.CoTheDanhGia = false;
+                    booking.TrangThaiDanhGia = "Xem đánh giá";
+                }
+                else
+                {
+                    // Chưa có đánh giá - kiểm tra thời gian
+                    var usage = await _context.SuDungPhongs
+                .FirstOrDefaultAsync(su => su.MaDangKy == booking.MaDangKy);
+
+                    DateTime? completionTime = null;
+
+                    // ✅ Ưu tiên GioKetThucThucTe, fallback về ThoiGianKetThuc
+                    if (usage?.GioKetThucThucTe.HasValue == true)
+                    {
+                        completionTime = usage.GioKetThucThucTe.Value;
+                    }
+                    else
+                    {
+                        // Fallback: Dùng ThoiGianKetThuc của booking
+                        completionTime = booking.ThoiGianKetThuc;
+                        _logger.LogWarning("Current booking {MaDangKy} missing GioKetThucThucTe, using ThoiGianKetThuc", booking.MaDangKy);
+                    }
+
+                    if (completionTime.HasValue)
+                    {
+                        var nowVn = GetVietnamTime();
+                        var daysSinceCompleted = (nowVn - completionTime.Value).TotalDays;
+
+                        if (daysSinceCompleted <= 7)
+                        {
+                            // Còn trong thời hạn đánh giá
+                            booking.DaDanhGia = false;
+                            booking.CoTheDanhGia = true;
+                            booking.TrangThaiDanhGia = "Đánh giá ngay";
+                        }
+                        else
+                        {
+                            // Hết hạn đánh giá
+                            booking.DaDanhGia = false;
+                            booking.CoTheDanhGia = false;
+                            booking.TrangThaiDanhGia = "Hết hạn đánh giá";
+                        }
+                    }
+                    else
+                    {
+                        booking.DaDanhGia = false;
+                        booking.CoTheDanhGia = false;
+                        booking.TrangThaiDanhGia = "Lỗi dữ liệu";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error enhancing current booking {BookingId} with rating", booking.MaDangKy);
+                booking.DaDanhGia = false;
+                booking.CoTheDanhGia = false;
+                booking.TrangThaiDanhGia = "Lỗi kiểm tra";
+            }
+        }
+    } }

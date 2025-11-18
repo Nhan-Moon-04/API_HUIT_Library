@@ -27,5 +27,10 @@ public int? SoLuong { get; set; }
         // ? Thêm thông tin vi ph?m
         public bool CoBienBan { get; set; }
         public int SoLuongBienBan { get; set; }
+
+        // Thông tin ?ánh giá (cho booking ?ã completed)
+        public bool DaDanhGia { get; set; }
+        public bool CoTheDanhGia { get; set; }
+        public string? TrangThaiDanhGia { get; set; }
     }
 }

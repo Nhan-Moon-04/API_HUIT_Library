@@ -150,18 +150,25 @@ public partial class HuitThuVienContext : DbContext
 
         modelBuilder.Entity<DanhGium>(entity =>
         {
-            entity.HasKey(e => e.MaDanhGia).HasName("PK__DanhGia__AA9515BF6BF8DA56");
+            entity.HasKey(e => e.MaDanhGia).HasName("PK__DanhGia__AA9515BFD5D5F214");
 
-            entity.Property(e => e.LoaiDoiTuong).HasMaxLength(50);
             entity.Property(e => e.NgayDanhGia)
-                .HasDefaultValueSql("(getdate())")
-                .HasColumnType("datetime");
+                .HasPrecision(0)
+                .HasDefaultValueSql("(sysutcdatetime())");
             entity.Property(e => e.NoiDung).HasMaxLength(500);
+
+            entity.HasOne(d => d.MaDangKyNavigation).WithMany(p => p.DanhGia)
+                .HasForeignKey(d => d.MaDangKy)
+                .HasConstraintName("FK_DanhGia_DangKyPhong");
 
             entity.HasOne(d => d.MaNguoiDungNavigation).WithMany(p => p.DanhGia)
                 .HasForeignKey(d => d.MaNguoiDung)
-                .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK_DanhGia_NguoiDung");
+
+            entity.HasOne(d => d.MaPhongNavigation).WithMany(p => p.DanhGia)
+                .HasForeignKey(d => d.MaPhong)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK_DanhGia_Phong");
         });
 
         modelBuilder.Entity<GiangVien>(entity =>
@@ -563,7 +570,7 @@ public partial class HuitThuVienContext : DbContext
 
         modelBuilder.Entity<VisitLog>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__VisitLog__3214EC07A4D02C80");
+            entity.HasKey(e => e.Id).HasName("PK__VisitLog__3214EC07B159B62F");
 
             entity.ToTable("VisitLog");
 

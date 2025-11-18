@@ -17,6 +17,8 @@ public partial class PhongTaiNguyen
 
     public string? GhiChu { get; set; }
 
+    public int SoLuongHuHong { get; set; }
+
     public virtual Phong MaPhongNavigation { get; set; } = null!;
 
     public virtual TaiNguyen MaTaiNguyenNavigation { get; set; } = null!;
