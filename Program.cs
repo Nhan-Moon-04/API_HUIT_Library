@@ -1,4 +1,5 @@
-﻿using HUIT_Library.Models;
+﻿using HUIT_Library.Hubs; // ✅ Add ChatHub import
+using HUIT_Library.Models;
 using HUIT_Library.Services;
 using HUIT_Library.Services.IServices;
 using HUIT_Library.Services.BookingServices; // Add this import
@@ -14,6 +15,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// 📊 Add SignalR for realtime chat - MINIMAL CONFIG FIRST
+builder.Services.AddSignalR();
 
 // Add HttpClient for API calls
 builder.Services.AddHttpClient();
@@ -61,64 +65,89 @@ var jwtIssuer = builder.Configuration.GetValue<string>("Jwt:Issuer") ?? "HUIT_Li
 var jwtAudience = builder.Configuration.GetValue<string>("Jwt:Audience") ?? "HUIT_Library_Users";
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+.AddJwtBearer(options =>
     {
         options.RequireHttpsMetadata = false;
-        options.SaveToken = true;
+    options.SaveToken = true;
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuer = true,
-            ValidIssuer = jwtIssuer,
-            ValidateAudience = true,
-            ValidAudience = jwtAudience,
+ValidateIssuer = true,
+  ValidIssuer = jwtIssuer,
+     ValidateAudience = true,
+  ValidAudience = jwtAudience,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtKey)),
-            ValidateLifetime = true,
-            ClockSkew = TimeSpan.Zero
+      IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtKey)),
+        ValidateLifetime = true,
+  ClockSkew = TimeSpan.Zero
         };
+      
+        // 🎯 Add JWT support for SignalR
+     options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+        var accessToken = context.Request.Query["access_token"];
+  var path = context.HttpContext.Request.Path;
+    
+        // If the request is for our SignalR hub...
+      if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/chathub"))
+ {
+  context.Token = accessToken;
+     }
+              return Task.CompletedTask;
+          }
+};
     });
 
 builder.Services.AddAuthorization();
 
-// Add CORS
+// 🔗 Update CORS to support SignalR
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", cors =>
     {
-        cors.AllowAnyOrigin()
-            .AllowAnyMethod()
-            .AllowAnyHeader();
+      cors.WithOrigins(
+            "http://localhost:4200",
+     "https://localhost:4200",
+            "http://localhost:3000",
+            "https://localhost:3000",
+            "http://localhost:5173",  // Vite dev server
+            "https://localhost:5173"
+        )
+        .AllowAnyMethod()
+        .AllowAnyHeader()
+        .AllowCredentials(); // 🔐 Required for SignalR authentication
     });
 });
 
-// ? Add Swagger + JWT Auth config
+// 📄 Add Swagger + JWT Auth config
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new() { Title = "HUIT Library API", Version = "v1" });
 
-    // ? C?u hình nút Authorize d? nh?p JWT Token
+    // 🔐 Cấu hình nút Authorize để nhập JWT Token
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "Nh?p token theo d?ng: Bearer {token}",
-        Name = "Authorization",
+        Description = "Nhập token theo dạng: Bearer {token}",
+     Name = "Authorization",
         In = ParameterLocation.Header,
-        Type = SecuritySchemeType.ApiKey,
-        Scheme = "Bearer"
+     Type = SecuritySchemeType.ApiKey,
+    Scheme = "Bearer"
     });
 
     c.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            new List<string>()
+     new OpenApiSecurityScheme
+     {
+           Reference = new OpenApiReference
+       {
+         Type = ReferenceType.SecurityScheme,
+     Id = "Bearer"
+     }
+      },
+    new List<string>()
         }
     });
 });
@@ -134,12 +163,15 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.UseCors("AllowAll");
+app.UseCors("AllowAll"); // 🌐 Enable CORS for SignalR
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// 🎯 Map SignalR ChatHub for realtime messaging
+app.MapHub<ChatHub>("/chathub");
 
 app.Urls.Add("https://0.0.0.0:7100");
 
