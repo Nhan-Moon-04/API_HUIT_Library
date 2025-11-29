@@ -108,5 +108,23 @@ namespace HUIT_Library.Controllers
             return Ok(new { message = "Đổi mật khẩu thành công." });
         }
 
+        /// <summary>
+        /// 🔧 DEVELOPMENT ONLY: Hash tất cả password plain text trong database
+     /// </summary>
+        [HttpPost("dev/hash-all-passwords")]
+  public async Task<IActionResult> HashAllPlainTextPasswords()
+        {
+       var env = _configuration["ASPNETCORE_ENVIRONMENT"] ?? "Production";
+   if (env != "Development")
+         return NotFound();
+
+       var (updatedCount, message) = await _authService.HashAllPlainTextPasswordsAsync();
+   
+   return Ok(new { 
+  message, 
+   updatedCount,
+   timestamp = DateTime.UtcNow
+        });
+ }
     }
 }

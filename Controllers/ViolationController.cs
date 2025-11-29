@@ -1,151 +1,153 @@
-using HUIT_Library.Services.BookingServices;
+Ôªøusing HUIT_Library.Services.BookingServices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
-
+using HUIT_Library.DTOs.Request;
 namespace HUIT_Library.Controllers
 {
     /// <summary>
-    /// API Controller cho qu?n l˝ vi ph?m
+    /// API Controller cho qu?n l√Ω vi ph?m
     /// </summary>
- [Authorize]
+    [Authorize]
     [ApiController]
     [Route("api/v2/[controller]")]
     public class ViolationController : ControllerBase
     {
         private readonly IViolationService _violationService;
-    private readonly ILogger<ViolationController> _logger;
+        private readonly ILogger<ViolationController> _logger;
 
-  public ViolationController(
-     IViolationService violationService,
-    ILogger<ViolationController> logger)
+        public ViolationController(
+           IViolationService violationService,
+          ILogger<ViolationController> logger)
         {
-   _violationService = violationService;
-  _logger = logger;
-    }
+            _violationService = violationService;
+            _logger = logger;
+        }
 
         private int GetCurrentUserId()
-      {
-var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-  if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-   {
-     throw new UnauthorizedAccessException("KhÙng th? x·c ??nh ng??i d˘ng.");
-            }
-  return userId;
- }
-
-/// <summary>
- /// L?y danh s·ch vi ph?m c?a user
-        /// </summary>
-     [HttpGet("my-violations")]
-        public async Task<IActionResult> GetMyViolations([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
-     {
-     try
-      {
-    var userId = GetCurrentUserId();
-            var result = await _violationService.GetUserViolationsAsync(userId, pageNumber, pageSize);
-     return Ok(new { success = true, data = result, total = result.Count });
-         }
-        catch (UnauthorizedAccessException ex)
-   {
-         _logger.LogWarning(ex, "Unauthorized access in GetMyViolations");
-            return Unauthorized(new { success = false, message = "KhÙng cÛ quy?n truy c?p." });
-   }
-catch (Exception ex)
         {
-           _logger.LogError(ex, "Error in GetMyViolations");
-          return StatusCode(500, new { success = false, message = "?„ x?y ra l?i khÙng mong mu?n." });
-       }
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+            {
+                throw new UnauthorizedAccessException("Kh√¥ng th? x√°c ??nh ng??i d√πng.");
+            }
+            return userId;
         }
 
         /// <summary>
-    /// Ki?m tra vi ph?m g?n ?‚y
+        /// L?y danh s√°ch vi ph?m c?a user
+        /// </summary>
+        [HttpGet("my-violations")]
+        public async Task<IActionResult> GetMyViolations([FromBody] GetMyViolationsRequest request)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                var result = await _violationService.GetUserViolationsAsync(userId, request.PageNumber, request.PageSize);
+                return Ok(new { success = true, data = result, total = result.Count });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access in GetMyViolations");
+                return Unauthorized(new { success = false, message = "Kh√¥ng c√≥ quy·ªÅn truy c·∫≠p." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in GetMyViolations");
+                return StatusCode(500, new { success = false, message = "ƒê√£ x·∫£y ra l·ªói kh√¥ng mong mu·ªën." });
+            }
+        }
+
+        /// <summary>
+        /// Ki?m tra vi ph?m g?n ?√¢y
         /// </summary>
         [HttpGet("recent-check")]
         public async Task<IActionResult> CheckRecentViolations([FromQuery] int monthsBack = 6)
         {
-       try
- {
-            var userId = GetCurrentUserId();
-    var result = await _violationService.CheckRecentViolationsAsync(userId, monthsBack);
-   
-    return Ok(new { 
-    success = true, 
-         hasViolations = result.HasViolations,
-      violationCount = result.ViolationCount,
-   message = result.Message
-   });
+            try
+            {
+                var userId = GetCurrentUserId();
+                var result = await _violationService.CheckRecentViolationsAsync(userId, monthsBack);
+
+                return Ok(new
+                {
+                    success = true,
+                    hasViolations = result.HasViolations,
+                    violationCount = result.ViolationCount,
+                    message = result.Message
+                });
             }
-       catch (UnauthorizedAccessException ex)
-         {
-   _logger.LogWarning(ex, "Unauthorized access in CheckRecentViolations");
-          return Unauthorized(new { success = false, message = "KhÙng cÛ quy?n truy c?p." });
-     }
- catch (Exception ex)
-  {
-          _logger.LogError(ex, "Error in CheckRecentViolations");
-           return StatusCode(500, new { success = false, message = "?„ x?y ra l?i khÙng mong mu?n." });
-     }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access in CheckRecentViolations");
+                return Unauthorized(new { success = false, message = "Kh√¥ng c√≥ quy?n truy c?p." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in CheckRecentViolations");
+                return StatusCode(500, new { success = false, message = "?√£ x?y ra l?i kh√¥ng mong mu?n." });
+            }
         }
 
         /// <summary>
- /// L?y chi ti?t vi ph?m
-   /// </summary>
-      [HttpGet("details/{maViPham}")]
-   public async Task<IActionResult> GetViolationDetail(int maViPham)
-      {
- try
-      {
-         var userId = GetCurrentUserId();
-     var result = await _violationService.GetViolationDetailAsync(userId, maViPham);
+        /// L?y chi ti?t vi ph?m
+        /// </summary>
+        [HttpGet("details/{maViPham}")]
+        public async Task<IActionResult> GetViolationDetail(int maViPham)
+        {
+            try
+            {
+                var userId = GetCurrentUserId();
+                var result = await _violationService.GetViolationDetailAsync(userId, maViPham);
 
-      if (result == null)
-    {
-       return NotFound(new { success = false, message = "KhÙng tÏm th?y thÙng tin vi ph?m." });
-         }
+                if (result == null)
+                {
+                    return NotFound(new { success = false, message = "Kh√¥ng t√¨m th?y th√¥ng tin vi ph?m." });
+                }
 
-          return Ok(new { success = true, data = result });
-     }
-       catch (UnauthorizedAccessException ex)
-       {
-     _logger.LogWarning(ex, "Unauthorized access in GetViolationDetail");
- return Unauthorized(new { success = false, message = "KhÙng cÛ quy?n truy c?p." });
-    }
-          catch (Exception ex)
-     {
-            _logger.LogError(ex, "Error in GetViolationDetail for violation {MaViPham}", maViPham);
-     return StatusCode(500, new { success = false, message = "?„ x?y ra l?i khÙng mong mu?n." });
- }
- }
+                return Ok(new { success = true, data = result });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access in GetViolationDetail");
+                return Unauthorized(new { success = false, message = "Kh√¥ng c√≥ quy?n truy c?p." });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in GetViolationDetail for violation {MaViPham}", maViPham);
+                return StatusCode(500, new { success = false, message = "?√£ x?y ra l?i kh√¥ng mong mu?n." });
+            }
+        }
 
         /// <summary>
-   /// L?y danh s·ch vi ph?m c?a m?t phi?u ??ng k˝ phÚng
+        /// L?y danh s√°ch vi ph?m c?a m?t phi?u ??ng k√Ω ph√≤ng
         /// </summary>
         [HttpGet("booking/{maDangKy}")]
         public async Task<IActionResult> GetBookingViolations(int maDangKy)
- {
+        {
             try
             {
-    var userId = GetCurrentUserId();
-    var result = await _violationService.GetBookingViolationsAsync(userId, maDangKy);
+                var userId = GetCurrentUserId();
+                var result = await _violationService.GetBookingViolationsAsync(userId, maDangKy);
 
-            return Ok(new { 
-            success = true, 
-            data = result,
-              count = result.Count,
-           message = result.Count > 0 ? $"TÏm th?y {result.Count} vi ph?m" : "KhÙng cÛ vi ph?m n‡o"
-       });
-  }
+                return Ok(new
+                {
+                    success = true,
+                    data = result,
+                    count = result.Count,
+                    message = result.Count > 0 ? $"T√¨m th?y {result.Count} vi ph?m" : "Kh√¥ng c√≥ vi ph?m n√†o"
+                });
+            }
             catch (UnauthorizedAccessException ex)
- {
-             _logger.LogWarning(ex, "Unauthorized access in GetBookingViolations");
-                return Unauthorized(new { success = false, message = "KhÙng cÛ quy?n truy c?p." });
-        }
- catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access in GetBookingViolations");
+                return Unauthorized(new { success = false, message = "Kh√¥ng c√≥ quy?n truy c?p." });
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in GetBookingViolations for booking {MaDangKy}", maDangKy);
-      return StatusCode(500, new { success = false, message = "?„ x?y ra l?i khÙng mong mu?n." });
+                return StatusCode(500, new { success = false, message = "?√£ x?y ra l?i kh√¥ng mong mu?n." });
             }
-      }
+        }
     }
 }

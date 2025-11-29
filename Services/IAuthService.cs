@@ -16,5 +16,8 @@ namespace HUIT_Library.Services
 
         // Change password using current password for verification
         Task<bool> ChangePasswordAsync(string maDangNhap, string currentPassword, string newPassword);
+
+        // Development-only helper to hash all plain text passwords
+        Task<(int Updated, string Message)> HashAllPlainTextPasswordsAsync();
     }
 }
