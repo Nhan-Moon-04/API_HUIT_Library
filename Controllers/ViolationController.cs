@@ -3,10 +3,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using HUIT_Library.DTOs.Request;
+
 namespace HUIT_Library.Controllers
 {
     /// <summary>
-    /// API Controller cho qu?n lý vi ph?m
+    /// API Controller cho quản lý vi phạm
     /// </summary>
     [Authorize]
     [ApiController]
@@ -18,7 +19,7 @@ namespace HUIT_Library.Controllers
 
         public ViolationController(
            IViolationService violationService,
-          ILogger<ViolationController> logger)
+           ILogger<ViolationController> logger)
         {
             _violationService = violationService;
             _logger = logger;
@@ -29,15 +30,15 @@ namespace HUIT_Library.Controllers
             var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
             {
-                throw new UnauthorizedAccessException("Không th? xác ??nh ng??i dùng.");
+                throw new UnauthorizedAccessException("Không thể xác định người dùng.");
             }
             return userId;
         }
 
         /// <summary>
-        /// L?y danh sách vi ph?m c?a user
+        /// Lấy danh sách vi phạm của người dùng
         /// </summary>
-        [HttpGet("my-violations")]
+        [HttpPost("my-violations")]
         public async Task<IActionResult> GetMyViolations([FromBody] GetMyViolationsRequest request)
         {
             try
@@ -59,7 +60,7 @@ namespace HUIT_Library.Controllers
         }
 
         /// <summary>
-        /// Ki?m tra vi ph?m g?n ?ây
+        /// Kiểm tra vi phạm gần đây
         /// </summary>
         [HttpGet("recent-check")]
         public async Task<IActionResult> CheckRecentViolations([FromQuery] int monthsBack = 6)
@@ -80,17 +81,17 @@ namespace HUIT_Library.Controllers
             catch (UnauthorizedAccessException ex)
             {
                 _logger.LogWarning(ex, "Unauthorized access in CheckRecentViolations");
-                return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
+                return Unauthorized(new { success = false, message = "Không có quyền truy cập." });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in CheckRecentViolations");
-                return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
+                return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi không mong muốn." });
             }
         }
 
         /// <summary>
-        /// L?y chi ti?t vi ph?m
+        /// Lấy chi tiết vi phạm
         /// </summary>
         [HttpGet("details/{maViPham}")]
         public async Task<IActionResult> GetViolationDetail(int maViPham)
@@ -102,7 +103,7 @@ namespace HUIT_Library.Controllers
 
                 if (result == null)
                 {
-                    return NotFound(new { success = false, message = "Không tìm th?y thông tin vi ph?m." });
+                    return NotFound(new { success = false, message = "Không tìm thấy thông tin vi phạm." });
                 }
 
                 return Ok(new { success = true, data = result });
@@ -110,17 +111,17 @@ namespace HUIT_Library.Controllers
             catch (UnauthorizedAccessException ex)
             {
                 _logger.LogWarning(ex, "Unauthorized access in GetViolationDetail");
-                return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
+                return Unauthorized(new { success = false, message = "Không có quyền truy cập." });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in GetViolationDetail for violation {MaViPham}", maViPham);
-                return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
+                return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi không mong muốn." });
             }
         }
 
         /// <summary>
-        /// L?y danh sách vi ph?m c?a m?t phi?u ??ng ký phòng
+        /// Lấy danh sách vi phạm của một phiếu đăng ký phòng
         /// </summary>
         [HttpGet("booking/{maDangKy}")]
         public async Task<IActionResult> GetBookingViolations(int maDangKy)
@@ -135,18 +136,20 @@ namespace HUIT_Library.Controllers
                     success = true,
                     data = result,
                     count = result.Count,
-                    message = result.Count > 0 ? $"Tìm th?y {result.Count} vi ph?m" : "Không có vi ph?m nào"
+                    message = result.Count > 0
+                        ? $"Tìm thấy {result.Count} vi phạm"
+                        : "Không có vi phạm nào"
                 });
             }
             catch (UnauthorizedAccessException ex)
             {
                 _logger.LogWarning(ex, "Unauthorized access in GetBookingViolations");
-                return Unauthorized(new { success = false, message = "Không có quy?n truy c?p." });
+                return Unauthorized(new { success = false, message = "Không có quyền truy cập." });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in GetBookingViolations for booking {MaDangKy}", maDangKy);
-                return StatusCode(500, new { success = false, message = "?ã x?y ra l?i không mong mu?n." });
+                return StatusCode(500, new { success = false, message = "Đã xảy ra lỗi không mong muốn." });
             }
         }
     }
