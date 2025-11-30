@@ -94,24 +94,14 @@ namespace HUIT_Library.Services
                 if (request.ThoiGianBatDau == default)
                     return (false, "Vui lòng chọn thời gian bắt đầu.");
 
-                // ✅ Kiểm tra số lượng tối thiểu dựa trên loại phòng
+                // ✅ Kiểm tra số lượng cơ bản
+                if (request.SoLuong <= 0)
+                    return (false, "Số lượng người tham gia phải lớn hơn 0.");
+
+                // ✅ Kiểm tra loại phòng tồn tại
                 var loaiPhong = await _context.LoaiPhongs.FindAsync(request.MaLoaiPhong);
                 if (loaiPhong == null)
                     return (false, "Loại phòng không tồn tại.");
-
-                // Kiểm tra số lượng với sức chứa phòng
-                int sucChuaToiDa = loaiPhong.SoLuongChoNgoi;
-                int soLuongToiThieu = sucChuaToiDa / 2; // 50% sức chứa
-
-                if (request.SoLuong < soLuongToiThieu)
-                {
-                    return (false, $"Số lượng người tham gia phải ít nhất {soLuongToiThieu} người (50% sức chứa phòng {sucChuaToiDa} người).");
-                }
-
-                if (request.SoLuong > sucChuaToiDa)
-                {
-                    return (false, $"Số lượng người tham gia không được vượt quá {sucChuaToiDa} người (sức chứa tối đa của phòng).");
-                }
 
                 var nowVn = GetVietnamTime();
 
@@ -142,14 +132,14 @@ namespace HUIT_Library.Services
                 parameters.Add("@MaLoaiPhong", request.MaLoaiPhong);
                 parameters.Add("@ThoiGianBatDau", startForDb);
                 parameters.Add("@LyDo", request.LyDo ?? "");
-                parameters.Add("@SoLuong", request.SoLuong <= 0 ? 1 : request.SoLuong);
+                parameters.Add("@SoLuong", request.SoLuong);
                 parameters.Add("@GhiChu", request.GhiChu ?? "");
 
                 // Add output parameters
                 parameters.Add("@ResultCode", dbType: DbType.Int32, direction: ParameterDirection.Output);
                 parameters.Add("@ResultMessage", dbType: DbType.String, size: 255, direction: ParameterDirection.Output);
 
-                // 4️⃣ Gọi stored procedure
+                // 4️⃣ Gọi stored procedure (trigger sẽ tự động kiểm tra số lượng)
                 await using var conn = _context.Database.GetDbConnection();
                 if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
 
@@ -194,7 +184,24 @@ namespace HUIT_Library.Services
             "Error Number: {ErrorNumber}, Severity: {Severity}, State: {State}",
                     userId, ex.Number, ex.Class, ex.State);
 
-                // Trả về thông báo thân thiện dựa trên loại lỗi SQL
+                // ✅ Xử lý trigger error (số lượng không hợp lệ)
+                if (ex.Number == 50000) // RAISERROR from trigger
+                {
+                    var triggerMessage = ex.Message;
+                    if (triggerMessage.Contains("Phòng học nhóm chỉ cho phép 5–7 người"))
+                        return (false, "Phòng học nhóm chỉ cho phép từ 5 đến 7 người tham gia.");
+                    if (triggerMessage.Contains("Phòng hội thảo chỉ cho phép 50–90 người"))
+                        return (false, "Phòng hội thảo chỉ cho phép từ 50 đến 90 người tham gia.");
+                    if (triggerMessage.Contains("Phòng thuyết trình chỉ cho phép 8–20 người"))
+                        return (false, "Phòng thuyết trình chỉ cho phép từ 8 đến 20 người tham gia.");
+                    if (triggerMessage.Contains("Phòng nghiên cứu chỉ cho phép tối đa 15 người"))
+                        return (false, "Phòng nghiên cứu chỉ cho phép tối đa 15 người tham gia.");
+               
+
+                    return (false, "Số lượng người tham gia không phù hợp với loại phòng được chọn.");
+                }
+
+                // Trả về thông báo thân thiện dựa trên loại lỗi SQL khác
                 var userMessage = ex.Number switch
                 {
                     2 => "Không thể kết nối đến cơ sở dữ liệu. Vui lòng thử lại sau.",
