@@ -126,5 +126,83 @@ namespace HUIT_Library.Controllers
    timestamp = DateTime.UtcNow
         });
  }
+
+        /// <summary>
+        /// ✅ Đăng nhập cho admin (Quản lý kỹ thuật, Quản lý thư viện, Nhân viên thư viên)
+        /// Tự động tạo token vĩnh viễn cho vai trò 1, 2, 3
+        /// </summary>
+        [HttpPost("admin-login")]
+    public async Task<ActionResult<LoginResponse>> AdminLogin([FromBody] LoginRequest request)
+        {
+     if (!ModelState.IsValid)
+  {
+                return BadRequest(new LoginResponse
+     {
+         Success = false,
+      Message = "Dữ liệu không hợp lệ!"
+  });
+    }
+
+            var result = await _authService.AdminLoginAsync(request);
+ 
+            if (result.Success)
+          {
+      // Add additional info about token type for admin
+   return Ok(new 
+       {
+         result.Success,
+ result.Message,
+      result.Token,
+         result.User,
+             TokenInfo = new 
+{
+             Type = result.User?.VaiTro switch 
+  {
+ "QUAN_TRI" => "Permanent (Vĩnh viễn)",
+      "NHAN_VIEN" => result.User.MaNguoiDung <= 3 ? "Permanent (Vĩnh viễn)" : "Temporary (7 ngày)",
+    _ => "Temporary (7 ngày)"
+  },
+           ExpiresIn = result.User?.VaiTro == "QUAN_TRI" || (result.User?.MaNguoiDung <= 3) ? "Never" : "7 days",
+                  IssuedAt = DateTime.UtcNow
+    }
+   });
+}
+        
+  return BadRequest(result);
+        }
+
+        /// <summary>
+        /// ✅ Test endpoint để kiểm tra token vĩnh viễn
+        /// </summary>
+        [Authorize]
+        [HttpGet("test-permanent-token")]
+  public IActionResult TestPermanentToken()
+        {
+            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+   var userName = User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value;
+   var userRole = User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+        var tokenType = User.FindFirst("TokenType")?.Value;
+          var issuedAt = User.FindFirst("IssuedAt")?.Value;
+
+       return Ok(new
+            {
+        message = "Token hoạt động tốt!",
+    currentTime = DateTime.UtcNow,
+                user = new
+           {
+        id = userId,
+        name = userName,
+ role = userRole,
+      tokenType = tokenType ?? "Unknown"
+                },
+           tokenInfo = new
+   {
+         type = tokenType,
+            issuedAt = issuedAt != null ? DateTimeOffset.FromUnixTimeSeconds(long.Parse(issuedAt)).DateTime : (DateTime?)null,
+ isPermanent = tokenType == "Permanent",
+        claims = User.Claims.Select(c => new { c.Type, c.Value }).ToList()
+    }
+ });
+        }
     }
 }

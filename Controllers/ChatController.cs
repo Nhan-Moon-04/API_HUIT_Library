@@ -1,12 +1,14 @@
 ﻿using HUIT_Library.DTOs.DTO;
 using HUIT_Library.DTOs.Request;
-using HUIT_Library.Services.IServices;
+using HUIT_Library.Hubs;
 using HUIT_Library.Services;
+using HUIT_Library.Services.IServices;
+using HUIT_Library.Services.IServices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
 using System.Text.Json;
-using HUIT_Library.Services.IServices;
 
 namespace HUIT_Library.Controllers;
 
@@ -153,28 +155,80 @@ public class ChatController : ControllerBase
             return StatusCode(500, new { message = "Lỗi hệ thống khi tạo phiên chat với bot" });
         }
     }
-
-    [Authorize]
+    [AllowAnonymous]
     [HttpPost("message/send")]
     public async Task<IActionResult> SendMessage([FromBody] SendMessageRequest request)
     {
+        // ✅ Flexible user identification: JWT token hoặc truyền trực tiếp
+        int userId;
+        bool isAuthenticated = false;
+
+        // Kiểm tra JWT token trước
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (!int.TryParse(userIdClaim, out var userId))
-            return Unauthorized();
-
-        var msg = await _chatService.SendMessageAsync(userId, request);
-        if (msg == null) return BadRequest(new { message = "Phiên chat không tồn tại" });
-
-        return Ok(new MessageDto
+        if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out var tokenUserId))
         {
-            MaTinNhan = msg.MaTinNhan,
-            MaPhienChat = msg.MaPhienChat,
-            MaNguoiGui = msg.MaNguoiGui,
-            NoiDung = msg.NoiDung,
-            ThoiGianGui = msg.ThoiGianGui,
-            LaBot = msg.LaBot
-        });
+            // ✅ User có JWT token hợp lệ
+            userId = tokenUserId;
+            isAuthenticated = true;
+        }
+        else if (request.MaNguoiDung.HasValue && request.MaNguoiDung.Value > 0)
+        {
+            // ✅ Không có token, sử dụng MaNguoiDung từ request (WinForms)
+            userId = request.MaNguoiDung.Value;
+            isAuthenticated = false;
+        }
+        else
+        {
+            // ❌ Không có token và không có MaNguoiDung
+            return BadRequest(new {
+                success = false,
+                message = "Cần có JWT token hoặc truyền MaNguoiDung trong request. " +
+                          "Đối với WinForms: thêm 'maNguoiDung' vào request body."
+            });
+        }
+
+        try
+        {
+            var msg = await _chatService.SendMessageAsync(userId, request);
+            if (msg == null)
+            {
+                return BadRequest(new {
+                    success = false,
+                    message = "Phiên chat không tồn tại hoặc bạn không có quyền truy cập"
+                });
+            }
+
+            // ✅ ChatService đã tự động gửi SignalR rồi, không cần gửi lại ở đây
+            // Trả về thông tin đầy đủ
+            return Ok(new {
+                success = true,
+                message = "Tin nhắn đã được gửi thành công",
+                data = new MessageDto
+                {
+                    MaTinNhan = msg.MaTinNhan,
+                    MaPhienChat = msg.MaPhienChat,
+                    MaNguoiGui = msg.MaNguoiGui,
+                    NoiDung = msg.NoiDung,
+                    ThoiGianGui = msg.ThoiGianGui,
+                    LaBot = msg.LaBot
+                },
+                debugInfo = new {
+                    authMethod = isAuthenticated ? "JWT Token" : "Direct MaNguoiDung",
+                    userId = userId,
+                    timestamp = DateTime.UtcNow
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in SendMessage for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
+            return StatusCode(500, new {
+                success = false,
+                message = "Lỗi hệ thống khi gửi tin nhắn"
+            });
+        }
     }
+
 
     [Authorize]
     [HttpPost("bot/message/send")]
@@ -263,7 +317,7 @@ public class ChatController : ControllerBase
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
-        
+
         if (!int.TryParse(userIdClaim, out var userId))
         {
             _logger.LogWarning("Invalid user ID claim when getting latest chat session: {UserIdClaim}", userIdClaim);
@@ -287,10 +341,10 @@ public class ChatController : ControllerBase
             }
 
             // Check if this is a newly created session (has only bot welcome message)
-            bool isNewSession = latestSessionWithMessages.TotalMessages == 1 && 
+            bool isNewSession = latestSessionWithMessages.TotalMessages == 1 &&
                                latestSessionWithMessages.Messages.Any(m => m.LaBot == true);
 
-            var message = isNewSession 
+            var message = isNewSession
                 ? $"Đã tự động tạo phiên chat bot mới (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với tin nhắn chào mừng"
                 : $"Đã tải thành công phiên chat mới nhất (ID: {latestSessionWithMessages.SessionInfo.MaPhienChat}) với {latestSessionWithMessages.TotalMessages} tin nhắn";
 
@@ -389,8 +443,9 @@ public class ChatController : ControllerBase
         try
         {
             var sessions = await _chatService.GetUserChatSessionsAsync(userId);
-            
-            return Ok(new {
+
+            return Ok(new
+            {
                 success = true,
                 userId = userId,
                 sessions = sessions,
@@ -419,13 +474,14 @@ public class ChatController : ControllerBase
         try
         {
             var botSession = await _chatService.GetOrCreateBotSessionAsync(userId);
-            
+
             if (botSession == null)
             {
                 return BadRequest(new { message = "Không thể tạo hoặc lấy phiên chat bot" });
             }
 
-            return Ok(new {
+            return Ok(new
+            {
                 success = true,
                 botSession = botSession,
                 message = "Bot session ready"
@@ -452,8 +508,9 @@ public class ChatController : ControllerBase
         try
         {
             var messagesPage = await _chatService.GetRecentMessagesAsync(maPhienChat, userId, page, pageSize);
-            
-            return Ok(new {
+
+            return Ok(new
+            {
                 success = true,
                 data = messagesPage,
                 message = $"Loaded {messagesPage.Messages.Count()} messages for session {maPhienChat}"
@@ -475,7 +532,7 @@ public class ChatController : ControllerBase
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
-        
+
         if (!int.TryParse(userIdClaim, out var userId))
             return Unauthorized();
 
@@ -485,28 +542,33 @@ public class ChatController : ControllerBase
 
             // Load all user's chat sessions
             var allSessions = await _chatService.GetUserChatSessionsAsync(userId);
-            
+
             // Get active bot session (if any)
             var activeBotSession = await _chatService.GetActiveBotSessionAsync(userId);
-            
+
             // Split sessions by type
             var botSessions = allSessions.Where(s => s.CoBot == true).ToList();
             var regularSessions = allSessions.Where(s => s.CoBot != true).ToList();
 
-            return Ok(new {
+            return Ok(new
+            {
                 success = true,
-                user = new {
+                user = new
+                {
                     userId = userId,
                     userName = userNameClaim
                 },
-                dashboard = new {
+                dashboard = new
+                {
                     totalSessions = allSessions.Count(),
-                    botSessions = new {
+                    botSessions = new
+                    {
                         total = botSessions.Count,
                         active = activeBotSession,
                         recent = botSessions.Take(5)
                     },
-                    regularSessions = new {
+                    regularSessions = new
+                    {
                         total = regularSessions.Count,
                         recent = regularSessions.Take(5)
                     },
@@ -539,8 +601,9 @@ public class ChatController : ControllerBase
             _logger.LogInformation("Testing bot connection for user {UserId} with message: {Message}", userId, testMessage);
 
             var botResponse = await _botpressService.SendMessageToBotAsync(testMessage, userId.ToString());
-            
-            return Ok(new {
+
+            return Ok(new
+            {
                 success = true,
                 userId = userId,
                 testMessage = testMessage,
@@ -551,10 +614,11 @@ public class ChatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error testing bot connection for user {UserId}", userId);
-            return StatusCode(500, new { 
+            return StatusCode(500, new
+            {
                 success = false,
-                message = "Bot connection test failed", 
-                error = ex.Message 
+                message = "Bot connection test failed",
+                error = ex.Message
             });
         }
     }
@@ -562,49 +626,49 @@ public class ChatController : ControllerBase
     /// <summary>
     /// 📋 Lấy toàn bộ lịch sử phiên chat giữa User và Nhân viên
     /// </summary>
-[Authorize]
+    [Authorize]
     [HttpGet("user/staff-sessions")]
     public async Task<IActionResult> GetAllUserStaffSessions()
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var userNameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
-        
-     if (!int.TryParse(userIdClaim, out var userId))
-     {
-    _logger.LogWarning("Invalid user ID claim when getting user-staff sessions: {UserIdClaim}", userIdClaim);
+
+        if (!int.TryParse(userIdClaim, out var userId))
+        {
+            _logger.LogWarning("Invalid user ID claim when getting user-staff sessions: {UserIdClaim}", userIdClaim);
             return Unauthorized(new { message = "Token không hợp lệ" });
         }
 
         try
         {
-          _logger.LogInformation("Getting ALL user-staff sessions for user {UserId} ({UserName})", userId, userNameClaim);
+            _logger.LogInformation("Getting ALL user-staff sessions for user {UserId} ({UserName})", userId, userNameClaim);
 
-         var staffSessions = await _chatService.GetAllUserStaffSessionsAsync(userId);
+            var staffSessions = await _chatService.GetAllUserStaffSessionsAsync(userId);
 
- return Ok(new
-     {
-              success = true,
-            userId = userId,
-           userName = userNameClaim,
-                data = new 
-     {
-            totalSessions = staffSessions.Count(),
-    sessions = staffSessions
-},
-       message = staffSessions.Any() 
-          ? $"Tìm thấy {staffSessions.Count()} phiên chat với nhân viên" 
-       : "Chưa có phiên chat nào với nhân viên"
+            return Ok(new
+            {
+                success = true,
+                userId = userId,
+                userName = userNameClaim,
+                data = new
+                {
+                    totalSessions = staffSessions.Count(),
+                    sessions = staffSessions
+                },
+                message = staffSessions.Any()
+                     ? $"Tìm thấy {staffSessions.Count()} phiên chat với nhân viên"
+                  : "Chưa có phiên chat nào với nhân viên"
             });
-}
+        }
         catch (Exception ex)
         {
- _logger.LogError(ex, "Error getting user-staff sessions for user {UserId}", userId);
+            _logger.LogError(ex, "Error getting user-staff sessions for user {UserId}", userId);
             return StatusCode(500, new
-       {
-         success = false,
-        message = "Lỗi hệ thống khi lấy lịch sử chat với nhân viên",
-             error = ex.Message
+            {
+                success = false,
+                message = "Lỗi hệ thống khi lấy lịch sử chat với nhân viên",
+                error = ex.Message
             });
-     }
+        }
     }
 }

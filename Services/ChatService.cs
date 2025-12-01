@@ -4,6 +4,8 @@ using HUIT_Library.Models;
 using HUIT_Library.Services.IServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.SignalR;
+using HUIT_Library.Hubs;
 
 namespace HUIT_Library.Services
 {
@@ -12,12 +14,14 @@ namespace HUIT_Library.Services
         private readonly HuitThuVienContext _context;
         private readonly IBotpressService _botpressService;
         private readonly ILogger<ChatService> _logger;
+        private readonly IHubContext<ChatHub> _hubContext;
 
-        public ChatService(HuitThuVienContext context, IBotpressService botpressService, ILogger<ChatService> logger)
+        public ChatService(HuitThuVienContext context, IBotpressService botpressService, ILogger<ChatService> logger, IHubContext<ChatHub> hubContext)
         {
             _context = context;
             _botpressService = botpressService;
             _logger = logger;
+            _hubContext = hubContext;
         }
 
         // Helper method to get Vietnam timezone
@@ -25,6 +29,56 @@ namespace HUIT_Library.Services
         {
             var vietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
             return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, vietnamTimeZone);
+        }
+
+        // Helper method to send real-time message
+        private async Task SendRealTimeMessageAsync(TinNhan message, NguoiDung sender, PhienChat session)
+        {
+            try
+            {
+                _logger.LogInformation("🔥 SendRealTimeMessageAsync started for message {MessageId}, session {SessionId}",
+                    message.MaTinNhan, session.MaPhienChat);
+
+                var messageData = new
+                {
+                    MaTinNhan = message.MaTinNhan,
+                    MaPhienChat = message.MaPhienChat,
+                    MaNguoiGui = message.MaNguoiGui,
+                    TenNguoiGui = sender.HoTen,
+                    NoiDung = message.NoiDung,
+                    ThoiGianGui = message.ThoiGianGui,
+                    LaBot = message.LaBot,
+                    MessageType = "UserMessage"
+                };
+
+                _logger.LogInformation("📤 Sending real-time to groups for session owner (User_{UserId}) and AdminGroup", session.MaNguoiDung);
+
+                // Send to specific user (session owner)
+                await _hubContext.Clients.Group($"User_{session.MaNguoiDung}")
+                    .SendAsync("ReceiveMessage", messageData);
+                _logger.LogInformation("✅ Sent to User_{UserId}", session.MaNguoiDung);
+
+                // If session has staff, send to staff as well
+                if (session.MaNhanVien.HasValue)
+                {
+                    await _hubContext.Clients.Group($"Staff_{session.MaNhanVien.Value}")
+                        .SendAsync("ReceiveMessage", messageData);
+                    _logger.LogInformation("✅ Sent to Staff_{StaffId}", session.MaNhanVien.Value);
+                }
+
+                // Send to admin group (WinForms apps and admins)
+                await _hubContext.Clients.Group("AdminGroup")
+                    .SendAsync("ReceiveMessage", messageData);
+                _logger.LogInformation("✅ Sent to AdminGroup");
+
+                _logger.LogInformation("🎉 Real-time message sent successfully for session {SessionId}, message {MessageId}",
+                    session.MaPhienChat, message.MaTinNhan);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error sending real-time message for session {SessionId}, message {MessageId}",
+                    session.MaPhienChat, message.MaTinNhan);
+            }
         }
 
         // Regular chat session creation (without bot)
@@ -280,61 +334,151 @@ namespace HUIT_Library.Services
         }
 
         // Send message in regular chat (non-bot)
+        /// <summary>
+        /// //////////////
+        /// </summary>
+        /// <param name="userId"></param>
+        /// <param name="request"></param>
+        /// gửi tin nhắn user
+        /// <returns></returns>
         public async Task<TinNhan?> SendMessageAsync(int userId, SendMessageRequest request)
         {
             try
             {
-                var session = await _context.PhienChats.FindAsync(request.MaPhienChat);
-                if (session == null)
-                {
-                    _logger.LogWarning("Session {SessionId} not found for user {UserId}", request.MaPhienChat, userId);
-                    return null;
-                }
+                _logger.LogInformation("📨 Starting SendMessageAsync for user {UserId}, session {SessionId}, content: {Content}",
+     userId, request.MaPhienChat, request.NoiDung);
 
-                // Verify sender exists
-                var sender = await _context.NguoiDungs.FindAsync(userId);
-                if (sender == null)
-                {
-                    _logger.LogWarning("User {UserId} not found when sending message", userId);
-                    return null;
-                }
+  var session = await _context.PhienChats
+           .Include(s => s.MaNguoiDungNavigation) // Load user info
+     .FirstOrDefaultAsync(s => s.MaPhienChat == request.MaPhienChat);
 
-                var message = new TinNhan
-                {
-                    MaPhienChat = request.MaPhienChat,
-                    MaNguoiGui = userId,
-                    NoiDung = request.NoiDung,
-                    ThoiGianGui = GetVietnamTime(),
-                    LaBot = false
-                };
+         if (session == null)
+     {
+   _logger.LogWarning("❌ Session {SessionId} not found", request.MaPhienChat);
+         return null;
+  }
 
-                _context.TinNhans.Add(message);
-                await _context.SaveChangesAsync();
+          _logger.LogInformation("✅ Session found: ID={SessionId}, Owner={OwnerId}, CoBot={CoBot}",
+      session.MaPhienChat, session.MaNguoiDung, session.CoBot);
 
-                _logger.LogInformation("Saved regular message {MessageId} from user {UserId}", message.MaTinNhan, userId);
+            // ✅ IMPORTANT: Allow session owner, staff, or admin to send messages
+// Allow if:
+    // 1. User is session owner 
+       // 2. User is assigned staff (MaNhanVien)
+// 3. User is admin/staff (for WinForms support)
+            bool canSendMessage = false;
+            string accessReason = "";
+
+  if (session.MaNguoiDung == userId)
+            {
+  canSendMessage = true;
+           accessReason = "Session Owner";
+        }
+      else if (session.MaNhanVien.HasValue && session.MaNhanVien.Value == userId)
+   {
+      canSendMessage = true;
+       accessReason = "Assigned Staff";
+            }
+            else
+      {
+       // ✅ Check if user is admin/staff (allow WinForms access)
+ var senderUser = await _context.NguoiDungs
+     .Include(u => u.NhanVienThuVien)
+   .Include(u => u.QuanLyKyThuat)
+ .FirstOrDefaultAsync(u => u.MaNguoiDung == userId);
+
+      if (senderUser?.NhanVienThuVien != null || senderUser?.QuanLyKyThuat != null)
+  {
+          canSendMessage = true;
+           accessReason = "Staff/Admin User";
+         
+            // ✅ Auto-assign staff to session if not already assigned
+   if (!session.MaNhanVien.HasValue)
+             {
+ session.MaNhanVien = userId;
+        await _context.SaveChangesAsync();
+         _logger.LogInformation("🔧 Auto-assigned staff {StaffId} to session {SessionId}", userId, session.MaPhienChat);
+      }
+       }
+            }
+
+   if (!canSendMessage)
+     {
+         _logger.LogWarning("❌ User {UserId} has no permission to send message to session {SessionId} (Owner: {OwnerId}, Staff: {StaffId})",
+     userId, request.MaPhienChat, session.MaNguoiDung, session.MaNhanVien);
+   return null;
+            }
+
+            _logger.LogInformation("✅ User {UserId} can send message to session {SessionId} - Reason: {AccessReason}",
+          userId, request.MaPhienChat, accessReason);
+
+            var sender = await _context.NguoiDungs.FindAsync(userId);
+      if (sender == null)
+   {
+          _logger.LogWarning("❌ User {UserId} not found when sending message", userId);
+        return null;
+        }
+
+     var message = new TinNhan
+        {
+               MaPhienChat = request.MaPhienChat,
+      MaNguoiGui = userId,
+ NoiDung = request.NoiDung,
+    ThoiGianGui = GetVietnamTime(),
+           LaBot = false
+         };
+
+      _context.TinNhans.Add(message);
+      await _context.SaveChangesAsync();
+
+        _logger.LogInformation("💾 Saved message {MessageId} from user {UserId} to database", message.MaTinNhan, userId);
+
+         // ✅ REAL-TIME MESSAGING: Send to all participants in this chat session
+        _logger.LogInformation("📡 Sending real-time message for session {SessionId}...", request.MaPhienChat);
+                await SendRealTimeMessageAsync(message, sender, session);
 
                 // If this session has a bot enabled, forward the message to the bot
-                if (session.CoBot == true)
-                {
-                    try
-                    {
-                        var botResponseText = await _botpressService.SendMessageToBotAsync(request.NoiDung, userId.ToString());
-                        await _botpressService.ProcessBotResponseAsync(botResponseText, request.MaPhienChat);
-                        _logger.LogInformation("Forwarded message to bot for session {SessionId}", request.MaPhienChat);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error forwarding message to bot for session {SessionId}", request.MaPhienChat);
-                    }
-                }
+    if (session.CoBot == true)
+     {
+          try
+     {
+   _logger.LogInformation("🤖 Forwarding message to bot for session {SessionId}", request.MaPhienChat);
+ var botResponseText = await _botpressService.SendMessageToBotAsync(request.NoiDung, userId.ToString());
+               var botMessage = await _botpressService.ProcessBotResponseAsync(botResponseText, request.MaPhienChat);
 
-                return message;
+  // ✅ REAL-TIME MESSAGING: Send bot response in real-time
+         if (botMessage != null)
+     {
+        var botMessageEntity = new TinNhan
+     {
+           MaTinNhan = botMessage.MaTinNhan,
+   MaPhienChat = botMessage.MaPhienChat,
+            MaNguoiGui = botMessage.MaNguoiGui,
+         NoiDung = botMessage.NoiDung,
+       ThoiGianGui = botMessage.ThoiGianGui,
+         LaBot = botMessage.LaBot
+       };
+
+   var botSender = new NguoiDung { HoTen = "Bot Assistant" };
+        await SendRealTimeMessageAsync(botMessageEntity, botSender, session);
+             _logger.LogInformation("🤖 Bot response sent in real-time for session {SessionId}", request.MaPhienChat);
+        }
+
+     _logger.LogInformation("✅ Forwarded message to bot for session {SessionId}", request.MaPhienChat);
+       }
+         catch (Exception ex)
+         {
+     _logger.LogError(ex, "❌ Error forwarding message to bot for session {SessionId}", request.MaPhienChat);
+              }
+     }
+
+          return message;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error sending regular message for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
-                return null;
-            }
+ catch (Exception ex)
+      {
+           _logger.LogError(ex, "❌ Error sending regular message for user {UserId}, session {SessionId}", userId, request.MaPhienChat);
+       return null;
+}
         }
 
         public async Task<IEnumerable<MessageDto>> GetMessagesAsync(int maPhienChat)

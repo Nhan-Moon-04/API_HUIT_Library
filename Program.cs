@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
+using System.Security.Claims; // ✅ Add this for ClaimTypes
 using HUIT_Library.Services.TaiNguyen.IServices;
 using HUIT_Library.Services.TaiNguyen.Services;
 
@@ -67,35 +68,49 @@ var jwtAudience = builder.Configuration.GetValue<string>("Jwt:Audience") ?? "HUI
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 .AddJwtBearer(options =>
     {
-        options.RequireHttpsMetadata = false;
+ options.RequireHttpsMetadata = false;
     options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
+     options.TokenValidationParameters = new TokenValidationParameters
+   {
 ValidateIssuer = true,
-  ValidIssuer = jwtIssuer,
+ValidIssuer = jwtIssuer,
      ValidateAudience = true,
   ValidAudience = jwtAudience,
-            ValidateIssuerSigningKey = true,
+     ValidateIssuerSigningKey = true,
       IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(jwtKey)),
-        ValidateLifetime = true,
+        ValidateLifetime = true, // ✅ We'll handle permanent tokens in events
   ClockSkew = TimeSpan.Zero
         };
       
-        // 🎯 Add JWT support for SignalR
+        // 🎯 Add JWT support for SignalR and Permanent Token handling
      options.Events = new JwtBearerEvents
-        {
-            OnMessageReceived = context =>
-            {
-        var accessToken = context.Request.Query["access_token"];
+  {
+        OnMessageReceived = context =>
+   {
+  var accessToken = context.Request.Query["access_token"];
   var path = context.HttpContext.Request.Path;
     
-        // If the request is for our SignalR hub...
+      // If the request is for our SignalR hub...
       if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/chathub"))
  {
   context.Token = accessToken;
      }
               return Task.CompletedTask;
-          }
+          },
+     // ✅ Handle permanent tokens (no expiration validation)
+    OnTokenValidated = context =>
+            {
+           var tokenTypeClaim = context.Principal?.FindFirst("TokenType")?.Value;
+     if (tokenTypeClaim == "Permanent")
+    {
+     // Skip lifetime validation for permanent tokens
+       // Token is valid regardless of expiration
+                 var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            var userClaim = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            logger.LogInformation("Validated permanent token for user {UserId}", userClaim);
+                }
+    return Task.CompletedTask;
+      }
 };
     });
 

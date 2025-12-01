@@ -9,7 +9,7 @@ namespace HUIT_Library.Hubs
     /// <summary>
     /// SignalR Hub cho Chat realtime gi?a User và Admin
     /// </summary>
-    [Authorize]
+    [AllowAnonymous] // ? Cho phép WinForms connect không c?n JWT
     public class ChatHub : Hub
 {
         private readonly HuitThuVienContext _context;
@@ -269,23 +269,221 @@ if (IsAdmin())
             }
         }
 
+        /// <summary>
+        /// Join vào group c?a user (cho WinForms và Web clients)
+        /// </summary>
+        /// <param name="userId">ID user ?? join vào group c?a h? (optional, m?c ??nh dùng current user)</param>
+   public async Task JoinUserGroup(int? userId = null)
+  {
+    try
+          {
+   var currentUserId = GetCurrentUserId();
+var targetUserId = userId ?? currentUserId;
+   
+          _logger.LogInformation("?? User {CurrentUserId} requesting to join User_{TargetUserId} group. Connection: {ConnectionId}", 
+        currentUserId, targetUserId, Context.ConnectionId);
+     
+ // ? Cho phép anonymous user join group (cho WinForms)
+    bool canJoin = true;
+              string joinReason = "Anonymous access";
+
+      if (currentUserId > 0)
+   {
+    // User có ID, ki?m tra quy?n
+             if (targetUserId == currentUserId)
+     {
+        canJoin = true;
+  joinReason = "Own group";
+       }
+     else if (IsAdmin())
+      {
+        canJoin = true;
+        joinReason = "Admin access";
+             }
+      else
+     {
+         canJoin = false;
+    joinReason = "No permission";
+    }
+ }
+
+    if (!canJoin)
+       {
+       _logger.LogWarning("? User {CurrentUserId} denied join User_{TargetUserId} group. Reason: {Reason}", 
+       currentUserId, targetUserId, joinReason);
+         await Clients.Caller.SendAsync("JoinUserGroupError", $"Không có quy?n join group c?a user khác. Reason: {joinReason}");
+    return;
+ }
+
+      _logger.LogInformation("? Joining User_{TargetUserId} group. Reason: {JoinReason}", targetUserId, joinReason);
+
+      // Join vào User group
+   await Groups.AddToGroupAsync(Context.ConnectionId, $"User_{targetUserId}");
+        _logger.LogInformation("? Successfully joined User_{TargetUserId} group", targetUserId);
+    
+         // N?u là admin/staff, c?ng join AdminGroup
+             if (currentUserId > 0 && IsAdmin())
+     {
+      try
+      {
+  await Groups.AddToGroupAsync(Context.ConnectionId, "AdminGroup");
+    _logger.LogInformation("? Admin/Staff {UserId} joined AdminGroup", currentUserId);
+     }
+         catch (Exception ex)
+   {
+       _logger.LogError(ex, "? Failed to join AdminGroup for user {UserId}", currentUserId);
+        }
+         }
+
+       await Clients.Caller.SendAsync("JoinedUserGroup", new
+     {
+     UserId = targetUserId,
+   GroupName = $"User_{targetUserId}",
+   IsAdmin = currentUserId > 0 ? IsAdmin() : false,
+     CurrentUserId = currentUserId,
+        Message = $"? ?ã join vào group User_{targetUserId} ({joinReason})"
+     });
+
+    _logger.LogInformation("?? User {CurrentUserId} successfully joined User_{TargetUserId} group with reason: {JoinReason}", 
+                currentUserId, targetUserId, joinReason);
+     }
+catch (Exception ex)
+            {
+         _logger.LogError(ex, "? DETAILED ERROR joining user group. CurrentUserId: {CurrentUserId}, TargetUserId: {TargetUserId}, Connection: {ConnectionId}", 
+        GetCurrentUserId(), userId, Context.ConnectionId);
+
+         try
+     {
+  await Clients.Caller.SendAsync("JoinUserGroupError", $"L?i khi join group: {ex.Message}");
+     }
+      catch (Exception notifyEx)
+       {
+ _logger.LogError(notifyEx, "? Failed to send error notification to client");
+                }
+            }
+   }
+
+        /// <summary>
+      /// Join vào AdminGroup (ch? cho admin/staff)
+   /// </summary>
+        public async Task JoinAdminGroup()
+        {
+            try
+         {
+            var userId = GetCurrentUserId();
+           
+    if (!IsAdmin())
+          {
+    await Clients.Caller.SendAsync("JoinAdminGroupError", "Không có quy?n admin");
+            return;
+          }
+
+     await Groups.AddToGroupAsync(Context.ConnectionId, "AdminGroup");
+  
+       await Clients.Caller.SendAsync("JoinedAdminGroup", new
+                {
+      UserId = userId,
+        Message = "? ?ã join vào AdminGroup"
+             });
+
+             _logger.LogInformation("? Admin/Staff {UserId} joined AdminGroup", userId);
+            }
+   catch (Exception ex)
+       {
+       _logger.LogError(ex, "? Error joining admin group for {UserId}", GetCurrentUserId());
+       await Clients.Caller.SendAsync("JoinAdminGroupError", "L?i khi join AdminGroup");
+       }
+        }
+
         // Helper methods
         private int GetCurrentUserId()
      {
-   var userIdClaim = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-       return int.TryParse(userIdClaim, out var userId) ? userId : 0;
-  }
+            // ? ?u tiên JWT token
+        var userIdClaim = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (int.TryParse(userIdClaim, out var jwtUserId))
+             return jwtUserId;
+      
+            // ? Fallback: L?y t? query string (cho WinForms)
+     var userIdFromQuery = Context.GetHttpContext()?.Request.Query["userId"].FirstOrDefault();
+        if (int.TryParse(userIdFromQuery, out var queryUserId))
+  return queryUserId;
+            
+            // ? Fallback: Anonymous user
+            _logger.LogWarning("Cannot determine user ID for connection {ConnectionId}", Context.ConnectionId);
+            return 0; // Anonymous
+        }
 
         private string GetCurrentUserName()
-    {
- return Context.User?.FindFirst(ClaimTypes.Name)?.Value ?? "Unknown User";
-        }
+        {
+          // ? ?u tiên JWT token
+    var userName = Context.User?.FindFirst(ClaimTypes.Name)?.Value;
+       if (!string.IsNullOrEmpty(userName))
+           return userName;
+      
+   // ? Fallback: L?y t? query string
+      var userNameFromQuery = Context.GetHttpContext()?.Request.Query["userName"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(userNameFromQuery))
+     return userNameFromQuery;
+   
+  // ? Fallback: Connection ID
+    return $"User_{Context.ConnectionId[..8]}";
+    }
 
         private bool IsAdmin()
         {
-            return Context.User?.IsInRole("Admin") == true || 
-            Context.User?.IsInRole("NhanVien") == true;
-        }
+    try
+ {
+      _logger.LogDebug("?? Checking admin status for user...");
+      
+// Ki?m tra role admin ho?c staff t? JWT
+  var hasAdminRole = Context.User?.IsInRole("Admin") == true || 
+       Context.User?.IsInRole("NhanVien") == true;
+  
+      if (hasAdminRole) 
+       {
+    _logger.LogDebug("? User has admin role from JWT");
+          return true;
+     }
+
+    // ? Fallback: Check database cho user không có role trong JWT
+ var userId = GetCurrentUserId();
+        if (userId <= 0) 
+       {
+      _logger.LogDebug("? No valid user ID for admin check");
+          return false;
+    }
+
+  _logger.LogDebug("?? Checking database for admin status of user {UserId}", userId);
+
+       // S? d?ng synchronous query ?? tránh async issues trong context này
+      var user = _context.NguoiDungs
+         .Where(u => u.MaNguoiDung == userId)
+       .Select(u => new 
+       {
+      u.MaNguoiDung,
+     HasNhanVien = u.NhanVienThuVien != null,
+        HasQuanLy = u.QuanLyKyThuat != null
+        })
+       .FirstOrDefault();
+
+           if (user == null)
+      {
+         _logger.LogDebug("? User {UserId} not found in database", userId);
+  return false;
+   }
+
+    bool isAdmin = user.HasNhanVien || user.HasQuanLy;
+         _logger.LogDebug("? User {UserId} admin status: {IsAdmin} (NhanVien: {HasNhanVien}, QuanLy: {HasQuanLy})", 
+     userId, isAdmin, user.HasNhanVien, user.HasQuanLy);
+
+        return isAdmin;
+   }
+        catch (Exception ex)
+      {
+      _logger.LogError(ex, "? Error checking admin status for user {UserId}", GetCurrentUserId());
+    return false;
+    }
+      }
 
         private async Task<bool> CanAccessChatSession(int userId, int chatSessionId)
         {
