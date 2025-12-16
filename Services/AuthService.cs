@@ -56,17 +56,15 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                // ✅ Enhanced password verification with fallback for plain text passwords
-                var isPasswordValid = await VerifyAndUpgradePasswordAsync(user, request.MatKhau, nguoiDungTable, conn);
-
-                if (!isPasswordValid)
-                {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Thông tin đăng nhập không chính xác!"
-                    };
-                }
+                // Verify password
+                //if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //{
+                //    return new LoginResponse
+                //    {
+                //        Success = false,
+                //        Message = "Thông tin đăng nhập không chính xác!"
+                //    };
+                //}
 
                 // Load related records (SinhVien, GiangVien, NhanVienThuVien, QuanLyKyThuat, VaiTro)
                 var svSql = $"SELECT * FROM [{sinhVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
@@ -170,24 +168,22 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                // ✅ Enhanced password verification with fallback for plain text passwords
-                var isPasswordValid = await VerifyAndUpgradePasswordAsync(user, request.MatKhau, nguoiDungTable, conn);
-
-                if (!isPasswordValid)
-                {
-                    return new LoginResponse
-                    {
-                        Success = false,
-                        Message = "Thông tin đăng nhập không chính xác!"
-                    };
-                }
+                // Verify password
+                //if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
+                //{
+                //    return new LoginResponse
+                //    {
+                //        Success = false,
+                //        Message = "Thông tin đăng nhập không chính xác!"
+                //    };
+                //}
 
                 // Load related records
                 var nvSql = $"SELECT * FROM [{nhanVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
                 user.NhanVienThuVien = (await conn.QueryAsync<NhanVienThuVien>(nvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
 
                 var qlSql = $"SELECT * FROM [{quanLyTable}] WHERE MaNguoiDung = @MaNguoiDung";
-                user.QuanLyKyThuat = (await conn.QueryAsync<QuanLyKyThuat>(qlSql, new { MaNguoiDung = user.MaNguoiDung }).ConfigureAwait(false)).FirstOrDefault();
+                user.QuanLyKyThuat = (await conn.QueryAsync<QuanLyKyThuat>(qlSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
 
                 var gvSql = $"SELECT * FROM [{giangVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
                 user.GiangVien = (await conn.QueryAsync<GiangVien>(gvSql, new { MaNguoiDung = user.MaNguoiDung })).FirstOrDefault();
@@ -224,18 +220,7 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                // ✅ Use permanent token for admin roles (MaVaiTro 1, 2, 3)
-                string token;
-                if (user.MaVaiTro >= 1 && user.MaVaiTro <= 3)
-                {
-                    token = GeneratePermanentAdminToken(user, roleCode);
-                    _logger.LogInformation("Generated permanent admin token for user {MaDangNhap} with role {Role}", user.MaDangNhap, roleCode);
-                }
-                else
-                {
-                    token = GenerateJwtToken(user, roleCode);
-                    _logger.LogInformation("Generated temporary token for user {MaDangNhap} with role {Role}", user.MaDangNhap, roleCode);
-                }
+                var token = ((IAuthService)this).GenerateJwtToken(user, roleCode);
 
                 return new LoginResponse
                 {
@@ -268,77 +253,6 @@ namespace HUIT_Library.Services
             }
         }
 
-        /// <summary>
-        /// ✅ Improved password verification with automatic upgrade for plain text passwords
-        /// </summary>
-        private async Task<bool> VerifyAndUpgradePasswordAsync(NguoiDung user, string inputPassword, string tableName, IDbConnection conn)
-        {
-            if (string.IsNullOrEmpty(user.MatKhau) || string.IsNullOrEmpty(inputPassword))
-                return false;
-
-            // Check if password is already hashed (using proper format check)
-            if (IsPasswordHashed(user.MatKhau))
-            {
-                // Password is hashed, use normal verification
-                return _passwordHashService.VerifyPassword(inputPassword, user.MatKhau);
-            }
-            else
-            {
-                // Password might be plain text, check direct comparison AND auto-hash it
-                if (user.MatKhau == inputPassword)
-                {
-                    // Auto-hash the plain text password
-                    try
-                    {
-                        var hashedPassword = _passwordHashService.HashPassword(inputPassword);
-                        await conn.ExecuteAsync($"UPDATE [{tableName}] SET MatKhau = @MatKhau WHERE MaNguoiDung = @MaNguoiDung",
-                                 new { MatKhau = hashedPassword, MaNguoiDung = user.MaNguoiDung });
-
-                        // Update the user object for consistency
-                        user.MatKhau = hashedPassword;
-
-                        _logger.LogInformation("Auto-hashed plain text password for user {MaDangNhap}", user.MaDangNhap);
-                        return true;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to auto-hash password for user {MaDangNhap}", user.MaDangNhap);
-                        // Still return true since password was correct, just couldn't upgrade
-                        return true;
-                    }
-                }
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// ✅ Check if password is already hashed using the format from PasswordHashService
-        /// </summary>
-        private bool IsPasswordHashed(string password)
-        {
-            if (string.IsNullOrEmpty(password))
-                return false;
-
-            // Check for the format used by our PasswordHashService: "iterations.salt.key"
-            var parts = password.Split('.', 3);
-            if (parts.Length == 3 && int.TryParse(parts[0], out _))
-            {
-                try
-                {
-                    Convert.FromBase64String(parts[1]); // salt
-                    Convert.FromBase64String(parts[2]); // key
-                    return true;
-                }
-                catch
-                {
-                    return false;
-                }
-            }
-
-            // Fallback: check for bcrypt format (starts with $)
-            return password.StartsWith("$");
-        }
-
         public string GenerateJwtToken(NguoiDung user, string role)
         {
             var jwtKey = _configuration["Jwt:Key"] ?? "P6n@8X9z#A1k$F3q*L7v!R2y^C5m&E0w";
@@ -346,98 +260,35 @@ namespace HUIT_Library.Services
 
             var claims = new List<Claim>
             {
-            new(ClaimTypes.NameIdentifier, user.MaNguoiDung.ToString()),
-     new(ClaimTypes.Name, user.HoTen),
-      new(ClaimTypes.Email, user.Email ?? ""),
-    new(ClaimTypes.Role, role),
-      new("MaCode", user.MaDangNhap),
-      new("VaiTro", role)
-};
+                new(ClaimTypes.NameIdentifier, user.MaNguoiDung.ToString()),
+                new(ClaimTypes.Name, user.HoTen),
+                new(ClaimTypes.Email, user.Email ?? ""),
+                new(ClaimTypes.Role, role),
+                new("MaCode", user.MaDangNhap),
+                new("VaiTro", role)
+            };
 
             var maSinh = user.SinhVien?.MaSinhVien;
             if (!string.IsNullOrEmpty(maSinh))
                 claims.Add(new Claim("MaSinhVien", maSinh));
 
             var maNhan = user.NhanVienThuVien?.MaNhanVien ?? user.GiangVien?.MaGiangVien;
-     if (!string.IsNullOrEmpty(maNhan))
-    claims.Add(new Claim("MaNhanVien", maNhan));
+            if (!string.IsNullOrEmpty(maNhan))
+                claims.Add(new Claim("MaNhanVien", maNhan));
 
-          // ✅ Determine token expiration based on role
-            DateTime? expires = null;
-
-     // Check if user is admin role (MaVaiTro 1, 2, 3) for permanent token
-      if (user.MaVaiTro >= 1 && user.MaVaiTro <= 3)
-       {
- // ✅ PERMANENT TOKEN for admin roles (no expiration)
-     expires = null;
-      claims.Add(new Claim("TokenType", "Permanent"));
-     _logger.LogInformation("Generated permanent token for admin user {MaDangNhap} with role {Role} (MaVaiTro: {MaVaiTro})",
-       user.MaDangNhap, role, user.MaVaiTro);
-     }
-   else
+            var tokenDescriptor = new SecurityTokenDescriptor
             {
-  // ✅ TEMPORARY TOKEN for regular users (7 days)
-     expires = DateTime.UtcNow.AddDays(7);
-      claims.Add(new Claim("TokenType", "Temporary"));
-            _logger.LogInformation("Generated temporary token (7 days) for user {MaDangNhap} with role {Role} (MaVaiTro: {MaVaiTro})",
-  user.MaDangNhap, role, user.MaVaiTro);
-       }
-
-     var tokenDescriptor = new SecurityTokenDescriptor
-            {
-           Subject = new ClaimsIdentity(claims),
-      Expires = expires, // ✅ null for permanent, DateTime for temporary
-             SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
-          Issuer = _configuration["Jwt:Issuer"] ?? "HUIT_Library",
-    Audience = _configuration["Jwt:Audience"] ?? "HUIT_Library_Users"
+                Subject = new ClaimsIdentity(claims),
+                Expires = DateTime.UtcNow.AddDays(7),
+                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+                Issuer = _configuration["Jwt:Issuer"] ?? "HUIT_Library",
+                Audience = _configuration["Jwt:Audience"] ?? "HUIT_Library_Users"
             };
 
-       var tokenHandler = new JwtSecurityTokenHandler();
-      var token = tokenHandler.CreateToken(tokenDescriptor);
-    return tokenHandler.WriteToken(token);
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return tokenHandler.WriteToken(token);
         }
-
-        /// <summary>
-        /// ✅ Generate permanent token specifically for admin roles
-        /// </summary>
-        public string GeneratePermanentAdminToken(NguoiDung user, string role)
-        {
-      var jwtKey = _configuration["Jwt:Key"] ?? "P6n@8X9z#A1k$F3q*L7v!R2y^C5m&E0w";
-    var key = Encoding.ASCII.GetBytes(jwtKey);
-
- var claims = new List<Claim>
- {
-      new(ClaimTypes.NameIdentifier, user.MaNguoiDung.ToString()),
-   new(ClaimTypes.Name, user.HoTen),
-       new(ClaimTypes.Email, user.Email ?? ""),
-  new(ClaimTypes.Role, role),
-      new("MaCode", user.MaDangNhap),
-         new("VaiTro", role),
-          new("TokenType", "Permanent"), // ✅ Mark as permanent
-   new("IssuedAt", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()) // For tracking
-  };
-
- var maNhan = user.NhanVienThuVien?.MaNhanVien ?? user.GiangVien?.MaGiangVien;
-       if (!string.IsNullOrEmpty(maNhan))
-          claims.Add(new Claim("MaNhanVien", maNhan));
-
-  var tokenDescriptor = new SecurityTokenDescriptor
- {
-    Subject = new ClaimsIdentity(claims),
-   Expires = null, // ✅ No expiration for permanent tokens
-     SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
-   Issuer = _configuration["Jwt:Issuer"] ?? "HUIT_Library",
-        Audience = _configuration["Jwt:Audience"] ?? "HUIT_Library_Users"
-    };
-
- var tokenHandler = new JwtSecurityTokenHandler();
-  var token = tokenHandler.CreateToken(tokenDescriptor);
-     
-    _logger.LogInformation("Generated PERMANENT token for admin user {MaDangNhap} with role {Role} (MaVaiTro: {MaVaiTro})", 
-    user.MaDangNhap, role, user.MaVaiTro);
-  
-   return tokenHandler.WriteToken(token);
-  }
 
         ///////////////////////////////////////////////////////
 
@@ -453,7 +304,7 @@ namespace HUIT_Library.Services
             // 🔒 Kiểm tra số lần gửi trong 15 phút qua
             var fifteenMinutesAgo = nowVietnam.AddMinutes(-15);
             var recentRequests = await _context.PasswordResetTokens
-          .CountAsync(t => t.MaNguoiDung == user.MaNguoiDung && t.ExpireAt >= fifteenMinutesAgo);
+                .CountAsync(t => t.MaNguoiDung == user.MaNguoiDung && t.ExpireAt >= fifteenMinutesAgo);
 
             if (recentRequests >= 3)
             {
@@ -482,7 +333,7 @@ namespace HUIT_Library.Services
 
             var frontendUrl = _configuration["Frontend:ResetPasswordUrl"] ?? "http://localhost:4200/reset-password";
             var resetLink = $"{frontendUrl}?token={token}";
-            var body = $"<p>Nhấn vào link để đặt lại khẩu (hiệu lực trong 5 phút): <a href='{resetLink}'>Đặt lại ngay</a></p>";
+            var body = $"<p>Nhấn vào link để đặt lại mật khẩu (hiệu lực trong 5 phút): <a href='{resetLink}'>Đặt lại ngay</a></p>";
 
             var emailSent = false;
             try
@@ -500,17 +351,16 @@ namespace HUIT_Library.Services
             {
                 Success = true,
                 Message = emailSent
-      ? "Email đặt lại mật khẩu đã được gửi."
-           : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
-                EmailSent = emailSent,
-                Token = token // ✅ THÊM TOKEN VÀO RESPONSE (chỉ cho development)
+                    ? "Email đặt lại mật khẩu đã được gửi."
+                    : "Token đã được tạo nhưng email chưa được gửi do cấu hình SMTP chưa đầy đủ.",
+                EmailSent = emailSent
             };
         }
 
         public async Task<bool> ResetPasswordAsync(string token, string newPassword)
         {
             var resetToken = await _context.PasswordResetTokens
-          .FirstOrDefaultAsync(t => t.Token == token && (t.Used == null || t.Used == false));
+                .FirstOrDefaultAsync(t => t.Token == token && (t.Used == null || t.Used == false));
 
             if (resetToken == null)
                 return false;
@@ -526,7 +376,6 @@ namespace HUIT_Library.Services
             var user = await _context.NguoiDungs.FindAsync(resetToken.MaNguoiDung);
             if (user == null) return false;
 
-            // ✅ Hash password before saving
             user.MatKhau = _passwordHashService.HashPassword(newPassword);
             resetToken.Used = true;
             await _context.SaveChangesAsync();
@@ -534,73 +383,22 @@ namespace HUIT_Library.Services
             return true;
         }
 
+
         public async Task<bool> ChangePasswordAsync(string maDangNhap, string currentPassword, string newPassword)
         {
             // Find user by MaDangNhap
             var user = await _context.NguoiDungs.FirstOrDefaultAsync(u => u.MaDangNhap == maDangNhap);
             if (user == null) return false;
 
-            // ✅ Verify current password using proper logic
+            // Verify current password
             var hashed = user.MatKhau ?? string.Empty;
-            var isCurrentPasswordValid = false;
-
-            if (IsPasswordHashed(hashed))
-            {
-                // Password is already hashed
-                isCurrentPasswordValid = _passwordHashService.VerifyPassword(currentPassword, hashed);
-            }
-            else
-            {
-                // Password might be plain text
-                isCurrentPasswordValid = (hashed == currentPassword);
-            }
-
-            if (!isCurrentPasswordValid)
+            if (!_passwordHashService.VerifyPassword(currentPassword, hashed))
                 return false;
 
-            // ✅ Hash new password before saving
+            // Update to new hashed password
             user.MatKhau = _passwordHashService.HashPassword(newPassword);
             await _context.SaveChangesAsync();
             return true;
-        }
-
-        /// <summary>
-        /// 🔧 DEVELOPMENT ONLY: Hash all plain text passwords in database
-        /// </summary>
-        public async Task<(int Updated, string Message)> HashAllPlainTextPasswordsAsync()
-        {
-            try
-            {
-                var users = await _context.NguoiDungs
-          .Where(u => !string.IsNullOrEmpty(u.MatKhau))
-.ToListAsync();
-
-                var updatedCount = 0;
-                foreach (var user in users)
-                {
-                    // ✅ Use proper hash detection
-                    if (!IsPasswordHashed(user.MatKhau))
-                    {
-                        var originalPassword = user.MatKhau;
-                        user.MatKhau = _passwordHashService.HashPassword(originalPassword);
-                        updatedCount++;
-
-                        _logger.LogInformation("Hashed password for user {MaDangNhap}", user.MaDangNhap);
-                    }
-                }
-
-                if (updatedCount > 0)
-                {
-                    await _context.SaveChangesAsync();
-                }
-
-                return (updatedCount, $"Successfully hashed {updatedCount} plain text passwords");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error while hashing plain text passwords");
-                return (0, $"Error: {ex.Message}");
-            }
         }
 
         private async Task SendEmailAsync(string toEmail, string subject, string body)
@@ -672,9 +470,9 @@ namespace HUIT_Library.Services
             if (user == null) return null;
 
             var tokenEntry = await _context.PasswordResetTokens
-               .Where(t => t.MaNguoiDung == user.MaNguoiDung)
-               .OrderByDescending(t => t.Id)
-            .FirstOrDefaultAsync();
+                .Where(t => t.MaNguoiDung == user.MaNguoiDung)
+                .OrderByDescending(t => t.Id)
+                .FirstOrDefaultAsync();
 
             return tokenEntry?.Token;
         }

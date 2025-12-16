@@ -71,7 +71,7 @@ public partial class HuitThuVienContext : DbContext
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
 #warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
-        => optionsBuilder.UseSqlServer("Server=NGUYEN-NHAN\\SQLEXPRESS;Database=HUIT_ThuVien;Trusted_Connection=True;TrustServerCertificate=True;");
+        => optionsBuilder.UseSqlServer("Server=ADMIN-PC\\SQLEXPRESS;Database=HUIT_ThuVien;Trusted_Connection=True;TrustServerCertificate=True;");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -150,7 +150,7 @@ public partial class HuitThuVienContext : DbContext
 
         modelBuilder.Entity<DanhGium>(entity =>
         {
-            entity.HasKey(e => e.MaDanhGia).HasName("PK__DanhGia__AA9515BFD5D5F214");
+            entity.HasKey(e => e.MaDanhGia).HasName("PK__DanhGia__AA9515BFCC870B25");
 
             entity.Property(e => e.NgayDanhGia)
                 .HasPrecision(0)

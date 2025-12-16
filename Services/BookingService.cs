@@ -270,11 +270,14 @@ namespace HUIT_Library.Services
         {
             try
             {
-                _logger.LogInformation("User {UserId} requesting extension for booking {BookingId} to {NewEndTime}",
-                    userId, request.MaDangKy, request.NewEndTime);
+                _logger.LogInformation("User {UserId} requesting extension for booking {BookingId}",
+                    userId, request.MaDangKy);
 
                 // 1️⃣ Load booking và kiểm tra quyền
-                var booking = await _context.DangKyPhongs.FindAsync(request.MaDangKy);
+                var booking = await _context.DangKyPhongs
+                    .Include(b => b.MaPhongNavigation)
+                    .FirstOrDefaultAsync(b => b.MaDangKy == request.MaDangKy);
+            
                 if (booking == null)
                     return (false, "Yêu cầu đặt phòng không tồn tại.");
 
@@ -296,26 +299,14 @@ namespace HUIT_Library.Services
                     return (false, statusMessage);
                 }
 
-                // ✅ 3️⃣ KIỂM TRA ĐÃ GIA HẠN CHƯA - CHỈ CHO PHÉP GIA HẠN 1 LẦN DUY NHẤT
-                var originalBookingEndTime = booking.ThoiGianBatDau.AddHours(2); // Thời gian kết thúc gốc (2 tiếng)
-                var isAlreadyExtended = booking.ThoiGianKetThuc > originalBookingEndTime;
-
-                if (isAlreadyExtended)
-                {
-                    var extensionTime = booking.ThoiGianKetThuc - originalBookingEndTime;
-                    return (false, $"❌ Đăng ký này đã được gia hạn {extensionTime.TotalMinutes:0} phút trước đó. " +
-                        $"Mỗi đăng ký chỉ được gia hạn 1 lần duy nhất để đảm bảo công bằng cho người dùng khác.");
-                }
-
-                // ✅ 4️⃣ KIỂM TRA BIÊN BẢN VI PHẠM - KHÔNG CHO PHÉP GIA HẠN NẾU CÓ VI PHẠM
+                // 3️⃣ KIỂM TRA BIÊN BẢN VI PHẠM
                 var hasViolations = await (from v in _context.ViPhams
-                                           join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
-                                           where sd.MaDangKy == request.MaDangKy
-                                           select v).AnyAsync();
+                                   join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
+                                   where sd.MaDangKy == request.MaDangKy
+                                   select v).AnyAsync();
 
                 if (hasViolations)
                 {
-                    // Lấy chi tiết vi phạm để thông báo cụ thể
                     var violationDetails = await (from v in _context.ViPhams
                                                   join sd in _context.SuDungPhongs on v.MaSuDung equals sd.MaSuDung
                                                   join qd in _context.QuyDinhViPhams on v.MaQuyDinh equals qd.MaQuyDinh into qdGroup
@@ -337,7 +328,7 @@ namespace HUIT_Library.Services
 
                 var now = GetVietnamTime();
 
-                // 5️⃣ Kiểm tra thời gian - phải còn hơn 15 phút và đang trong thời gian sử dụng
+                // 4️⃣ Kiểm tra thời gian - phải còn hơn 15 phút và đang trong thời gian sử dụng
                 if (!(booking.ThoiGianBatDau <= now && booking.ThoiGianKetThuc > now))
                     return (false, "Phòng không đang trong thời gian sử dụng.");
 
@@ -345,58 +336,67 @@ namespace HUIT_Library.Services
                 if (remaining.TotalMinutes < 15)
                     return (false, "Không thể gia hạn khi còn dưới 15 phút.");
 
-                // 6️⃣ Kiểm tra thời gian gia hạn hợp lệ - tối đa 2 giờ
-                if (request.NewEndTime <= booking.ThoiGianKetThuc)
-                    return (false, "Thời gian kết thúc mới phải lớn hơn thời gian hiện tại.");
+                // 5️⃣ Kiểm tra đã có booking gia hạn chưa
+                var existingExtension = await _context.DangKyPhongs
+                    .Where(d => d.MaNguoiDung == userId &&
+                       d.MaPhong == booking.MaPhong &&
+                       d.ThoiGianBatDau == booking.ThoiGianKetThuc &&
+                       d.GhiChu != null && d.GhiChu.Contains($"[GIA HẠN - Đăng ký #{request.MaDangKy}]"))
+                    .FirstOrDefaultAsync();
 
-                var extension = request.NewEndTime - booking.ThoiGianKetThuc;
-                if (extension <= TimeSpan.Zero || extension > TimeSpan.FromHours(2))
-                    return (false, "Chỉ cho phép gia hạn tối đa 2 giờ.");
-
-                // 7️⃣ Gọi stored procedure để kiểm tra xung đột 
-                using var conn = _context.Database.GetDbConnection();
-                if (conn.State == ConnectionState.Closed) await conn.OpenAsync();
-
-                var parameters = new DynamicParameters();
-                parameters.Add("@MaPhong", booking.MaPhong);
-                parameters.Add("@MaDangKyHienTai", request.MaDangKy);
-                parameters.Add("@ThoiGianBatDauGiaHan", booking.ThoiGianKetThuc);
-                parameters.Add("@ThoiGianKetThucMoi", request.NewEndTime);
-                parameters.Add("@KetQua", dbType: DbType.Int32, direction: ParameterDirection.Output);
-                parameters.Add("@ThongBao", dbType: DbType.String, size: 500, direction: ParameterDirection.Output);
-
-                _logger.LogInformation("Calling sp_KiemTraGiaHanPhong for room {RoomId}, current booking {BookingId}",
-                    booking.MaPhong, request.MaDangKy);
-
-                await conn.ExecuteAsync("dbo.sp_KiemTraGiaHanPhong", parameters, commandType: CommandType.StoredProcedure);
-
-                var ketQua = parameters.Get<int>("@KetQua");
-                var thongBao = parameters.Get<string>("@ThongBao") ?? "";
-
-                if (ketQua != 0)
+                if (existingExtension != null)
                 {
-                    _logger.LogWarning("Extension failed for booking {BookingId}. Code: {Code}, Message: {Message}",
-                        request.MaDangKy, ketQua, thongBao);
-                    return (false, thongBao);
+                    return (false, $"❌ Đăng ký này đã được tạo yêu cầu gia hạn (Mã gia hạn: #{existingExtension.MaDangKy}). " +
+                        $"Mỗi đăng ký chỉ được gia hạn 1 lần để đảm bảo công bằng cho người dùng khác.");
                 }
 
-                // 8️⃣ Cập nhật thời gian kết thúc và auto-approve
-                booking.ThoiGianKetThuc = request.NewEndTime;
-                booking.NgayDuyet = now;
-                booking.NguoiDuyet = 0; // System auto-approve
+                // 6️⃣ Tạo booking mới cho gia hạn
+                // Thời gian bắt đầu của booking mới = thời gian kết thúc của booking hiện tại
+                var newStartTime = booking.ThoiGianKetThuc;
+                var newEndTime = newStartTime.AddHours(2); // Gia hạn 2 tiếng
 
+                // 7️⃣ Kiểm tra xung đột với các booking khác
+                var hasConflict = await _context.DangKyPhongs
+                    .Where(d => d.MaPhong == booking.MaPhong &&
+                       d.MaDangKy != request.MaDangKy &&
+                       d.MaTrangThai != DB_REJECTED &&
+                       d.MaTrangThai != DB_CANCELLED &&
+                       !(newEndTime <= d.ThoiGianBatDau || newStartTime >= d.ThoiGianKetThuc))
+                    .AnyAsync();
+
+                if (hasConflict)
+                {
+                    return (false, "❌ Không thể gia hạn do phòng đã có người đặt cho thời gian tiếp theo. " +
+                        "Vui lòng trả phòng đúng giờ.");
+                }
+
+                // 8️⃣ Tạo booking mới với trạng thái Chờ duyệt
+                var extensionBooking = new DangKyPhong
+                {
+                    MaNguoiDung = userId,
+                    MaPhong = booking.MaPhong,
+                    MaLoaiPhong = booking.MaLoaiPhong,
+                    ThoiGianBatDau = newStartTime,
+                    ThoiGianKetThuc = newEndTime,
+                    NgayMuon = DateOnly.FromDateTime(now), // ✅ Convert DateTime to DateOnly
+                    MaTrangThai = DB_PENDING, // Chờ duyệt
+                    LyDo = booking.LyDo ?? "Gia hạn sử dụng phòng",
+                    SoLuong = booking.SoLuong,
+                    GhiChu = $"[GIA HẠN - Đăng ký #{request.MaDangKy}] Yêu cầu gia hạn thêm 2 tiếng từ {newStartTime:HH:mm dd/MM/yyyy}"
+                };
+
+                _context.DangKyPhongs.Add(extensionBooking);
                 await _context.SaveChangesAsync();
 
                 // 9️⃣ Tạo thông báo cho user
-                var extensionMinutes = (int)extension.TotalMinutes;
                 var thongBaoGiaHan = new ThongBao
                 {
                     MaNguoiDung = userId,
-                    TieuDe = "✅ Gia hạn phòng thành công",
-                    NoiDung = $"Bạn đã gia hạn thành công phòng {booking.MaPhongNavigation?.TenPhong ?? "N/A"} " +
-                             $"thêm {extensionMinutes} phút (đến {request.NewEndTime:HH:mm dd/MM/yyyy}). " +
-                             $"⚠️ Lưu ý: Đây là lần gia hạn duy nhất cho đăng ký này. " +
-                             $"Mã đăng ký: #{request.MaDangKy}",
+                    TieuDe = "📝 Yêu cầu gia hạn phòng đã được gửi",
+                    NoiDung = $"Bạn đã gửi yêu cầu gia hạn phòng {booking.MaPhongNavigation?.TenPhong ?? "N/A"} " +
+                     $"thêm 2 giờ (từ {newStartTime:HH:mm} đến {newEndTime:HH:mm dd/MM/yyyy}). " +
+                     $"Vui lòng chờ nhân viên duyệt. " +
+                     $"Mã đăng ký gốc: #{request.MaDangKy} | Mã gia hạn: #{extensionBooking.MaDangKy}",
                     NgayTao = now,
                     DaDoc = false
                 };
@@ -404,20 +404,18 @@ namespace HUIT_Library.Services
                 _context.ThongBaos.Add(thongBaoGiaHan);
                 await _context.SaveChangesAsync();
 
-                _logger.LogInformation("Successfully extended booking {BookingId} for user {UserId} by {Minutes} minutes (FIRST AND ONLY EXTENSION)",
-                    request.MaDangKy, userId, extensionMinutes);
+                _logger.LogInformation("Successfully created extension booking {NewBookingId} for original booking {OriginalBookingId}, user {UserId}",
+                    extensionBooking.MaDangKy, request.MaDangKy, userId);
 
-                return (true, $"✅ Gia hạn thành công thêm {extensionMinutes} phút! Thời gian mới: {request.NewEndTime:HH:mm dd/MM/yyyy}\n" +
-                    $"⚠️ Lưu ý: Đây là lần gia hạn duy nhất cho đăng ký này.");
-            }
-            catch (SqlException ex)
-            {
-                _logger.LogError(ex, "SQL error during booking extension for booking {BookingId}", request.MaDangKy);
-                return (false, "Lỗi hệ thống khi gia hạn. Vui lòng thử lại sau.");
+                return (true, $"✅ Yêu cầu gia hạn đã được gửi thành công!\n" +
+                    $"📋 Mã đăng ký gia hạn: #{extensionBooking.MaDangKy}\n" +
+                    $"⏰ Thời gian gia hạn: {newStartTime:HH:mm} - {newEndTime:HH:mm dd/MM/yyyy}\n" +
+                    $"⚠️ Vui lòng chờ nhân viên duyệt yêu cầu gia hạn của bạn.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error extending booking {BookingId} for user {UserId}", request.MaDangKy, userId);
+                _logger.LogError(ex, "Error creating extension booking for booking {BookingId}, user {UserId}", 
+                    request.MaDangKy, userId);
                 return (false, "Đã xảy ra lỗi không mong muốn. Vui lòng thử lại.");
             }
         }
