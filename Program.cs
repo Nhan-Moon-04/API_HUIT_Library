@@ -1,4 +1,5 @@
 ﻿using HUIT_Library.Hubs; // ✅ Add ChatHub import
+using HUIT_Library.Middleware; // ✅ Add Middleware import
 using HUIT_Library.Models;
 using HUIT_Library.Services;
 using HUIT_Library.Services.IServices;
@@ -35,6 +36,9 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IPasswordHashService, PasswordHashService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<ILoaiPhongServices, LoaiPhongServices>();
+
+// ✅ Register AuthNotificationService for SignalR notifications
+builder.Services.AddScoped<IAuthNotificationService, AuthNotificationService>();
 
 // Register the old BookingService for backward compatibility
 builder.Services.AddScoped<IBookingService, BookingService>();
@@ -116,6 +120,7 @@ ValidIssuer = jwtIssuer,
 
 builder.Services.AddAuthorization();
 
+
 // 🔗 Update CORS to support SignalR
 builder.Services.AddCors(options =>
 {
@@ -183,10 +188,17 @@ app.UseCors("AllowAll"); // 🌐 Enable CORS for SignalR
 app.UseAuthentication();
 app.UseAuthorization();
 
+// ✅ THÊM TOKEN VALIDATION MIDDLEWARE SAU AUTHENTICATION
+// Middleware này sẽ check session revoked cho mọi request có JWT token
+app.UseTokenValidation();
+
 app.MapControllers();
 
 // 🎯 Map SignalR ChatHub for realtime messaging
 app.MapHub<ChatHub>("/chathub");
+
+// ✅ Map SignalR AuthHub for realtime authentication events
+app.MapHub<AuthHub>("/authhub");
 
 app.Urls.Add("https://0.0.0.0:7100");
 

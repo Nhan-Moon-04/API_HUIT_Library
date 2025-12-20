@@ -43,5 +43,7 @@ public partial class NguoiDung
 
     public virtual ICollection<ThongBao> ThongBaos { get; set; } = new List<ThongBao>();
 
+    public virtual ICollection<UserSession> UserSessions { get; set; } = new List<UserSession>();
+
     public virtual ICollection<VisitLog> VisitLogs { get; set; } = new List<VisitLog>();
 }

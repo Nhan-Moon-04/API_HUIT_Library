@@ -5,6 +5,12 @@ namespace HUIT_Library.DTOs
         public bool Success { get; set; }
         public string Message { get; set; } = null!;
         public string? Token { get; set; }
+        
+        /// <summary>
+        /// Refresh token ?? t?o access token m?i (v?nh vi?n ho?c th?i h?n dài)
+        /// </summary>
+        public string? RefreshToken { get; set; }
+        
         public UserInfo? User { get; set; }
     }
 

@@ -63,6 +63,8 @@ public partial class HuitThuVienContext : DbContext
 
     public virtual DbSet<TrangThaiDangKy> TrangThaiDangKies { get; set; }
 
+    public virtual DbSet<UserSession> UserSessions { get; set; }
+
     public virtual DbSet<VaiTro> VaiTros { get; set; }
 
     public virtual DbSet<ViPham> ViPhams { get; set; }
@@ -530,6 +532,31 @@ public partial class HuitThuVienContext : DbContext
             entity.HasIndex(e => e.TenTrangThai, "UQ__TrangTha__9489EF66482BA5EC").IsUnique();
 
             entity.Property(e => e.TenTrangThai).HasMaxLength(50);
+        });
+
+        modelBuilder.Entity<UserSession>(entity =>
+        {
+            entity.ToTable("UserSession");
+
+            entity.HasIndex(e => e.ExpiresAt, "IX_UserSession_ExpiresAt").HasFilter("([ExpiresAt] IS NOT NULL AND [IsRevoked]=(0))");
+
+            entity.HasIndex(e => new { e.MaNguoiDung, e.IsRevoked }, "IX_UserSession_MaNguoiDung_IsRevoked");
+
+            entity.HasIndex(e => e.RefreshToken, "IX_UserSession_RefreshToken");
+
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.DeviceInfo).HasMaxLength(500);
+            entity.Property(e => e.ExpiresAt).HasColumnType("datetime");
+            entity.Property(e => e.IpAddress).HasMaxLength(50);
+            entity.Property(e => e.LastAccessAt).HasColumnType("datetime");
+            entity.Property(e => e.RefreshToken).HasMaxLength(500);
+            entity.Property(e => e.RevokeReason).HasMaxLength(255);
+
+            entity.HasOne(d => d.MaNguoiDungNavigation).WithMany(p => p.UserSessions)
+                .HasForeignKey(d => d.MaNguoiDung)
+                .HasConstraintName("FK_UserSession_NguoiDung");
         });
 
         modelBuilder.Entity<VaiTro>(entity =>

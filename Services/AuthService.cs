@@ -1,5 +1,6 @@
 ﻿using Dapper;
 using HUIT_Library.DTOs;
+using HUIT_Library.DTOs.Response;
 using HUIT_Library.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -9,6 +10,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Mail;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace HUIT_Library.Services
@@ -19,13 +21,20 @@ namespace HUIT_Library.Services
         private readonly IConfiguration _configuration;
         private readonly IPasswordHashService _passwordHashService;
         private readonly ILogger<AuthService> _logger;
+        private readonly IAuthNotificationService _authNotificationService;
 
-        public AuthService(HuitThuVienContext context, IConfiguration configuration, IPasswordHashService passwordHashService, ILogger<AuthService> logger)
+        public AuthService(
+            HuitThuVienContext context, 
+            IConfiguration configuration, 
+            IPasswordHashService passwordHashService, 
+            ILogger<AuthService> logger,
+            IAuthNotificationService authNotificationService)
         {
             _context = context;
             _configuration = configuration;
             _passwordHashService = passwordHashService;
             _logger = logger;
+            _authNotificationService = authNotificationService;
         }
 
         public async Task<LoginResponse> LoginAsync(LoginRequest request)
@@ -108,13 +117,29 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                var token = ((IAuthService)this).GenerateJwtToken(user, roleCode);
+                // ✅ TẠO SESSION MỚI VÀ GIỚI HẠN 3 THIẾT BỊ
+                var deviceInfo = request.DeviceInfo ?? "Unknown Device";
+                var ipAddress = request.IpAddress ?? "Unknown IP";
+                
+                var sessionResult = await CreateUserSessionAsync(user.MaNguoiDung, deviceInfo, ipAddress);
+                if (!sessionResult.Success)
+                {
+                    return new LoginResponse
+                    {
+                        Success = false,
+                        Message = sessionResult.Message
+                    };
+                }
+
+                // ✅ TẠO ACCESS TOKEN (Thời hạn ngắn - 7 ngày, có thể refresh)
+                var accessToken = GenerateJwtToken(user, roleCode, sessionResult.SessionId);
 
                 return new LoginResponse
                 {
                     Success = true,
                     Message = "Đăng nhập thành công!",
-                    Token = token,
+                    Token = accessToken,
+                    RefreshToken = sessionResult.RefreshToken, // ✅ Trả về refresh token
                     User = new UserInfo
                     {
                         MaNguoiDung = user.MaNguoiDung,
@@ -133,6 +158,7 @@ namespace HUIT_Library.Services
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Error during login for user {MaDangNhap}", request.MaDangNhap);
                 return new LoginResponse
                 {
                     Success = false,
@@ -167,16 +193,6 @@ namespace HUIT_Library.Services
                         Message = "Thông tin đăng nhập không chính xác!"
                     };
                 }
-
-                // Verify password
-                //if (!_passwordHashService.VerifyPassword(request.MatKhau, user.MatKhau ?? ""))
-                //{
-                //    return new LoginResponse
-                //    {
-                //        Success = false,
-                //        Message = "Thông tin đăng nhập không chính xác!"
-                //    };
-                //}
 
                 // Load related records
                 var nvSql = $"SELECT * FROM [{nhanVienTable}] WHERE MaNguoiDung = @MaNguoiDung";
@@ -220,13 +236,28 @@ namespace HUIT_Library.Services
                     };
                 }
 
-                var token = ((IAuthService)this).GenerateJwtToken(user, roleCode);
+                // ✅ TẠO SESSION MỚI VÀ GIỚI HẠN 3 THIẾT BỊ
+                var deviceInfo = request.DeviceInfo ?? "Admin Device";
+                var ipAddress = request.IpAddress ?? "Unknown IP";
+                
+                var sessionResult = await CreateUserSessionAsync(user.MaNguoiDung, deviceInfo, ipAddress);
+                if (!sessionResult.Success)
+                {
+                    return new LoginResponse
+                    {
+                        Success = false,
+                        Message = sessionResult.Message
+                    };
+                }
+
+                var accessToken = GenerateJwtToken(user, roleCode, sessionResult.SessionId);
 
                 return new LoginResponse
                 {
                     Success = true,
                     Message = "Đăng nhập thành công!",
-                    Token = token,
+                    Token = accessToken,
+                    RefreshToken = sessionResult.RefreshToken,
                     User = new UserInfo
                     {
                         MaNguoiDung = user.MaNguoiDung,
@@ -245,6 +276,7 @@ namespace HUIT_Library.Services
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Error during admin login for user {MaDangNhap}", request.MaDangNhap);
                 return new LoginResponse
                 {
                     Success = false,
@@ -253,7 +285,57 @@ namespace HUIT_Library.Services
             }
         }
 
-        public string GenerateJwtToken(NguoiDung user, string role)
+        // ✅ TẠO SESSION MỚI VÀ GIỚI HẠN 3 THIẾT BỊ
+        private async Task<(bool Success, string Message, string? RefreshToken, int SessionId)> CreateUserSessionAsync(
+            int userId, string deviceInfo, string ipAddress)
+        {
+            try
+            {
+                await using var conn = _context.Database.GetDbConnection();
+                if (conn.State == ConnectionState.Closed)
+                    await conn.OpenAsync();
+
+                // ✅ Gọi stored procedure để kiểm tra và giới hạn số thiết bị
+                var parameters = new DynamicParameters();
+                parameters.Add("@MaNguoiDung", userId);
+                parameters.Add("@MaxSessions", 3);
+
+                await conn.ExecuteAsync("sp_CheckAndLimitUserSessions", parameters, 
+                    commandType: CommandType.StoredProcedure);
+
+                // ✅ Tạo refresh token vĩnh viễn (hoặc thời hạn dài)
+                var refreshToken = GenerateRefreshToken();
+                var now = DateTime.Now;
+
+                var session = new UserSession
+                {
+                    MaNguoiDung = userId,
+                    RefreshToken = refreshToken,
+                    DeviceInfo = deviceInfo,
+                    IpAddress = ipAddress,
+                    CreatedAt = now,
+                    ExpiresAt = null, // ✅ NULL = vĩnh viễn
+                    LastAccessAt = now,
+                    IsRevoked = false
+                };
+
+                _context.UserSessions.Add(session);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("✅ Created new session {SessionId} for user {UserId} on device {DeviceInfo}", 
+                    session.Id, userId, deviceInfo);
+
+                return (true, "Session created successfully", refreshToken, session.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating user session for user {UserId}", userId);
+                return (false, "Không thể tạo phiên đăng nhập. Vui lòng thử lại.", null, 0);
+            }
+        }
+
+        // ✅ GENERATE JWT TOKEN (Thời hạn ngắn - có thể refresh)
+        public string GenerateJwtToken(NguoiDung user, string role, int sessionId = 0)
         {
             var jwtKey = _configuration["Jwt:Key"] ?? "P6n@8X9z#A1k$F3q*L7v!R2y^C5m&E0w";
             var key = Encoding.ASCII.GetBytes(jwtKey);
@@ -265,7 +347,8 @@ namespace HUIT_Library.Services
                 new(ClaimTypes.Email, user.Email ?? ""),
                 new(ClaimTypes.Role, role),
                 new("MaCode", user.MaDangNhap),
-                new("VaiTro", role)
+                new("VaiTro", role),
+                new("SessionId", sessionId.ToString()) // ✅ Thêm SessionId để tracking
             };
 
             var maSinh = user.SinhVien?.MaSinhVien;
@@ -279,7 +362,7 @@ namespace HUIT_Library.Services
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddDays(7),
+                Expires = DateTime.UtcNow.AddDays(7), // ✅ Access token: 7 ngày
                 SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
                 Issuer = _configuration["Jwt:Issuer"] ?? "HUIT_Library",
                 Audience = _configuration["Jwt:Audience"] ?? "HUIT_Library_Users"
@@ -288,6 +371,15 @@ namespace HUIT_Library.Services
             var tokenHandler = new JwtSecurityTokenHandler();
             var token = tokenHandler.CreateToken(tokenDescriptor);
             return tokenHandler.WriteToken(token);
+        }
+
+        // ✅ GENERATE REFRESH TOKEN (Random secure string)
+        private string GenerateRefreshToken()
+        {
+            var randomBytes = new byte[64];
+            using var rng = RandomNumberGenerator.Create();
+            rng.GetBytes(randomBytes);
+            return Convert.ToBase64String(randomBytes);
         }
 
         ///////////////////////////////////////////////////////
@@ -475,6 +567,151 @@ namespace HUIT_Library.Services
                 .FirstOrDefaultAsync();
 
             return tokenEntry?.Token;
+        }
+
+        // ✅ LẤY DANH SÁCH THIẾT BỊ ĐANG ĐĂNG NHẬP
+        public async Task<ActiveSessionsResponse> GetActiveSessionsAsync(int userId, int currentSessionId)
+        {
+            try
+            {
+                var now = DateTime.Now;
+
+                // Lấy tất cả session đang hoạt động của user
+                var sessions = await _context.UserSessions
+                    .Where(s => s.MaNguoiDung == userId && 
+                               s.IsRevoked == false &&
+                               (s.ExpiresAt == null || s.ExpiresAt > now))
+                    .OrderByDescending(s => s.LastAccessAt ?? s.CreatedAt)
+                    .Select(s => new UserSessionDto
+                    {
+                        SessionId = s.Id,
+                        DeviceInfo = s.DeviceInfo ?? "Unknown Device",
+                        IpAddress = s.IpAddress ?? "Unknown IP",
+                        CreatedAt = s.CreatedAt,
+                        LastAccessAt = s.LastAccessAt,
+                        ExpiresAt = s.ExpiresAt,
+                        IsCurrentSession = s.Id == currentSessionId,
+                        Status = "Active"
+                    })
+                    .ToListAsync();
+
+                // ✅ Tìm thiết bị hiện tại
+                var currentDevice = sessions.FirstOrDefault(s => s.SessionId == currentSessionId);
+
+                _logger.LogInformation("User {UserId} has {Count} active sessions. Current session: {CurrentSessionId}", 
+                    userId, sessions.Count, currentSessionId);
+
+                return new ActiveSessionsResponse
+                {
+                    Success = true,
+                    Message = "Lấy danh sách thiết bị thành công",
+                    TotalActiveSessions = sessions.Count,
+                    MaxAllowedSessions = 3,
+                    CurrentDevice = currentDevice, // ✅ Thêm thông tin thiết bị hiện tại
+                    Sessions = sessions
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting active sessions for user {UserId}", userId);
+                return new ActiveSessionsResponse
+                {
+                    Success = false,
+                    Message = "Lỗi khi lấy danh sách thiết bị",
+                    TotalActiveSessions = 0,
+                    MaxAllowedSessions = 3,
+                    CurrentDevice = null,
+                    Sessions = new List<UserSessionDto>()
+                };
+            }
+        }
+
+        // ✅ ĐĂNG XUẤT MỘT THIẾT BỊ CỤ THỂ
+        public async Task<(bool Success, string Message)> LogoutSessionAsync(int userId, int sessionId)
+        {
+            try
+            {
+                var session = await _context.UserSessions
+                    .FirstOrDefaultAsync(s => s.Id == sessionId && s.MaNguoiDung == userId);
+
+                if (session == null)
+                {
+                    return (false, "Không tìm thấy phiên đăng nhập");
+                }
+
+                if (session.IsRevoked)
+                {
+                    return (false, "Phiên đăng nhập đã bị thu hồi trước đó");
+                }
+
+                // Thu hồi session
+                session.IsRevoked = true;
+                session.RevokeReason = "User logged out manually";
+                
+                await _context.SaveChangesAsync();
+
+                // ✅ GỬI SIGNALR NOTIFICATION ĐỂ ĐĂNG XUẤT THIẾT BỊ REALTIME
+                await _authNotificationService.NotifySessionLogoutAsync(
+                    sessionId, 
+                    "Thiết bị đã bị đăng xuất từ thiết bị khác");
+
+                _logger.LogInformation("User {UserId} logged out session {SessionId} on device {DeviceInfo}", 
+                    userId, sessionId, session.DeviceInfo);
+
+                return (true, "Đăng xuất thiết bị thành công");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error logging out session {SessionId} for user {UserId}", sessionId, userId);
+                return (false, "Lỗi khi đăng xuất thiết bị");
+            }
+        }
+
+        // ✅ ĐĂNG XUẤT TẤT CẢ THIẾT BỊ KHÁC (GIỮ LẠI THIẾT BỊ HIỆN TẠI)
+        public async Task<(bool Success, string Message)> LogoutOtherSessionsAsync(int userId, int currentSessionId)
+        {
+            try
+            {
+                var now = DateTime.Now;
+
+                // Tìm tất cả session khác đang hoạt động
+                var otherSessions = await _context.UserSessions
+                    .Where(s => s.MaNguoiDung == userId && 
+                               s.Id != currentSessionId &&
+                               s.IsRevoked == false &&
+                               (s.ExpiresAt == null || s.ExpiresAt > now))
+                    .ToListAsync();
+
+                if (!otherSessions.Any())
+                {
+                    return (true, "Không có thiết bị nào khác đang đăng nhập");
+                }
+
+                // Thu hồi tất cả session khác
+                foreach (var session in otherSessions)
+                {
+                    session.IsRevoked = true;
+                    session.RevokeReason = "Logged out by user from another device";
+                }
+
+                await _context.SaveChangesAsync();
+
+                // ✅ GỬI SIGNALR NOTIFICATION ĐỂ ĐĂNG XUẤT TẤT CẢ THIẾT BỊ KHÁC
+                await _authNotificationService.NotifyUserSessionsLogoutAsync(
+                    userId, 
+                    currentSessionId, 
+                    "Tất cả thiết bị khác đã được đăng xuất");
+
+                _logger.LogInformation("User {UserId} logged out {Count} other sessions from session {CurrentSessionId}", 
+                    userId, otherSessions.Count, currentSessionId);
+
+                return (true, $"Đã đăng xuất {otherSessions.Count} thiết bị khác thành công");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error logging out other sessions for user {UserId}", userId);
+                return (false, "Lỗi khi đăng xuất các thiết bị khác");
+            }
         }
     }
 }
