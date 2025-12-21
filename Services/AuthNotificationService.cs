@@ -71,7 +71,7 @@ namespace HUIT_Library.Services
             {
                 var message = new
                 {
-                    Type = "ForceLogout",
+                    Type = "ForceLogoutOthers",
                     UserId = userId,
                     ExcludeSessionId = excludeSessionId,
                     Reason = reason,
@@ -79,17 +79,21 @@ namespace HUIT_Library.Services
                     Message = "T?t c? thi?t b? khác ?ã ???c ??ng xu?t"
                 };
 
+                _logger.LogInformation("?? Sending ForceLogoutOthers to group User_{UserId} with message: {@Message}",
+                    userId, message);
+
                 // G?i ??n group User_<userId>
                 // Client s? t? check n?u sessionId == excludeSessionId thì b? qua
                 await _authHubContext.Clients.Group($"User_{userId}")
                     .SendAsync("ForceLogoutOthers", message);
 
-                _logger.LogInformation("?? Sent ForceLogoutOthers notification to User {UserId} (exclude Session {ExcludeSessionId}): {Reason}",
+                _logger.LogInformation("? Sent ForceLogoutOthers notification to User {UserId} (exclude Session {ExcludeSessionId}): {Reason}",
                     userId, excludeSessionId, reason);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error sending ForceLogoutOthers notification to User {UserId}", userId);
+                _logger.LogError(ex, "? Error sending ForceLogoutOthers notification to User {UserId}", userId);
+                throw; // Re-throw ?? caller bi?t có l?i
             }
         }
     }

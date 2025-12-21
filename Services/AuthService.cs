@@ -696,14 +696,27 @@ namespace HUIT_Library.Services
 
                 await _context.SaveChangesAsync();
 
-                // ✅ GỬI SIGNALR NOTIFICATION ĐỂ ĐĂNG XUẤT TẤT CẢ THIẾT BỊ KHÁC
-                await _authNotificationService.NotifyUserSessionsLogoutAsync(
-                    userId, 
-                    currentSessionId, 
-                    "Tất cả thiết bị khác đã được đăng xuất");
-
                 _logger.LogInformation("User {UserId} logged out {Count} other sessions from session {CurrentSessionId}", 
                     userId, otherSessions.Count, currentSessionId);
+
+                // ✅ GỬI SIGNALR NOTIFICATION ĐỂ ĐĂNG XUẤT TẤT CẢ THIẾT BỊ KHÁC
+                _logger.LogInformation("📤 Sending SignalR ForceLogoutOthers to User_{UserId} (exclude session {CurrentSessionId})",
+                    userId, currentSessionId);
+
+                try
+                {
+                    await _authNotificationService.NotifyUserSessionsLogoutAsync(
+                        userId, 
+                        currentSessionId, 
+                        "Tất cả thiết bị khác đã được đăng xuất");
+
+                    _logger.LogInformation("✅ SignalR ForceLogoutOthers sent successfully to {Count} sessions", otherSessions.Count);
+                }
+                catch (Exception signalREx)
+                {
+                    // Log error nhưng không fail API call
+                    _logger.LogError(signalREx, "❌ Failed to send SignalR notification to User {UserId}", userId);
+                }
 
                 return (true, $"Đã đăng xuất {otherSessions.Count} thiết bị khác thành công");
             }
