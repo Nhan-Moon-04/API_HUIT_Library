@@ -16,7 +16,7 @@ namespace HUIT_Library.Services.BookingServices
         private const int DB_REJECTED = 3;
         private const int DB_INUSE = 4;
         private const int DB_CANCELLED = 5;
-        private const int DB_USED = 7;
+        private const int DB_USED = 6;  // ✅ Sửa từ 7 về 6 (theo database thực tế)
 
         // Logical booking statuses used throughout the app
         private enum BookingStatus
@@ -301,7 +301,23 @@ namespace HUIT_Library.Services.BookingServices
                     return await GetBookingHistoryAsync(userId, pageNumber, pageSize);
                 }
 
-                var lowerSearchTerm = searchTerm.ToLower();
+                var lowerSearchTerm = searchTerm.ToLower().Trim();
+
+                // ✅ Parse số từ search term (VD: "50" từ "50 người")
+                int? searchNumber = null;
+                var words = searchTerm.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var word in words)
+                {
+                    if (int.TryParse(word, out var number))
+                    {
+                        searchNumber = number;
+                        break;
+                    }
+                }
+
+                // ✅ DEBUG: Log để kiểm tra
+                _logger.LogInformation("Searching with: userId={UserId}, searchTerm={SearchTerm}, lowerSearchTerm={LowerSearchTerm}, searchNumber={SearchNumber}",
+                    userId, searchTerm, lowerSearchTerm, searchNumber);
 
                 var query = from dk in _context.DangKyPhongs
                             join phong in _context.Phongs on dk.MaPhong equals phong.MaPhong into phongGroup
@@ -312,15 +328,34 @@ namespace HUIT_Library.Services.BookingServices
                             join suDung in _context.SuDungPhongs on dk.MaDangKy equals suDung.MaDangKy into suDungGroup
                             from sd in suDungGroup.DefaultIfEmpty()
                             where dk.MaNguoiDung == userId &&
-                           // ✅ Sửa lại: chỉ tìm trong lịch sử (đã thuê, trả, hủy)
+                           // Chỉ tìm trong lịch sử (đã trả, hủy, từ chối)
                            (dk.MaTrangThai == DB_REJECTED || dk.MaTrangThai == DB_CANCELLED || dk.MaTrangThai == DB_USED) &&
                         (
-                               (p != null && p.TenPhong.ToLower().Contains(lowerSearchTerm)) ||
-                             (loaiPhong.TenLoaiPhong != null && loaiPhong.TenLoaiPhong.ToLower().Contains(lowerSearchTerm)) ||
-                          (dk.LyDo != null && dk.LyDo.ToLower().Contains(lowerSearchTerm)) ||
-                      (tt != null && tt.TenTrangThai.ToLower().Contains(lowerSearchTerm)) ||
-                          dk.MaDangKy.ToString().Contains(searchTerm) ||
- (dk.GhiChu != null && dk.GhiChu.ToLower().Contains(lowerSearchTerm))
+                               // ✅ Tìm theo tên phòng: "HT" → "Phòng HT2"
+                               (p != null && p.TenPhong != null && 
+                                p.TenPhong.ToLower().Contains(lowerSearchTerm)) ||
+                               
+                               // ✅ Tìm theo loại phòng: "hội thảo"
+                               (loaiPhong.TenLoaiPhong != null && 
+                                loaiPhong.TenLoaiPhong.ToLower().Contains(lowerSearchTerm)) ||
+                               
+                               // ✅ Tìm theo lý do: "học"
+                               (dk.LyDo != null && 
+                                dk.LyDo.ToLower().Contains(lowerSearchTerm)) ||
+                               
+                               // ✅ Tìm theo ghi chú: "123"
+                               (dk.GhiChu != null && 
+                                dk.GhiChu.ToLower().Contains(lowerSearchTerm)) ||
+                               
+                               // ✅ Tìm theo trạng thái
+                               (tt != null && tt.TenTrangThai != null &&
+                                tt.TenTrangThai.ToLower().Contains(lowerSearchTerm)) ||
+                               
+                               // ✅ Tìm theo mã đăng ký: "#1035" hoặc "1035"
+                               dk.MaDangKy.ToString().Contains(searchTerm.Replace("#", "")) ||
+                               
+                               // ✅ Tìm theo số người: "50"
+                               (searchNumber.HasValue && dk.SoLuong == searchNumber)
                               )
                             orderby dk.ThoiGianBatDau descending
                             select new BookingHistoryDto
@@ -344,6 +379,10 @@ namespace HUIT_Library.Services.BookingServices
                                 GhiChuSuDung = sd != null ? sd.GhiChu : null
                             };
 
+                // ✅ DEBUG: Count trước khi phân trang
+                var totalCount = await query.CountAsync();
+                _logger.LogInformation("Total matching records before paging: {TotalCount}", totalCount);
+
                 var result = await query
                       .Skip((pageNumber - 1) * pageSize)
                       .Take(pageSize)
@@ -352,8 +391,8 @@ namespace HUIT_Library.Services.BookingServices
                 // ✅ Thêm thông tin vi phạm
                 await EnhanceBookingHistoryWithViolationsAsync(result);
 
-                _logger.LogInformation("Found {Count} booking records for search term '{SearchTerm}', user {UserId}",
-                     result.Count, searchTerm, userId);
+                _logger.LogInformation("Found {Count} booking records for search term '{SearchTerm}', user {UserId} (total: {Total})",
+                     result.Count, searchTerm, userId, totalCount);
 
                 return result;
             }
